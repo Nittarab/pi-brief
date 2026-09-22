@@ -1,0 +1,29 @@
+{
+  "name": "pi-brief",
+  "version": "0.1.0",
+  "description": "A live, cost-bounded session brief for Pi",
+  "type": "module",
+  "license": "MIT",
+  "author": "Nittarab",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nittarab/pi-brief.git"
+  },
+  "keywords": ["pi-package", "pi-extension", "pi", "session", "summary"],
+  "files": ["src", "README.md", "LICENSE"],
+  "pi": { "extensions": ["./src/index.ts"] },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --experimental-transform-types --test test/*.test.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.87.1 <1"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.87.1",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3"
+  },
+  "engines": { "node": ">=22.18.0" },
+  "publishConfig": { "access": "public" }
+}
