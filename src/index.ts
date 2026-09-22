@@ -126,7 +126,7 @@ export default function piBrief(pi: ExtensionAPI) {
     controller?.add({ type: "assistant", text });
   });
   pi.on("agent_settled", (_event, ctx) => {
-    if (controller) { activity = controller.stats.limit ? "limit reached" : ""; show(ctx); void controller.flush(); }
+    if (controller) { activity = controller.stats.error ? "update failed" : controller.stats.limit ? "limit reached" : ""; show(ctx); void controller.flush(); }
   });
   pi.registerCommand("brief", {
     description: "Show the session brief; /brief status shows model, calls, cost and errors; /brief refresh retries pending activity",

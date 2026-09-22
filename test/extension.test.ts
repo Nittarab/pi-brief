@@ -86,6 +86,23 @@ test("a background summary finishing during work does not overwrite the live wor
   h.emit("session_shutdown");
 });
 
+test("failed summary stays visible in the native footer after agent settles", async () => {
+  const h = harness();
+  let attempts = 0;
+  h.setComplete(async () => { attempts++; return { ...response, stopReason: "error" }; });
+  h.emit("session_start");
+  h.emit("before_agent_start", { prompt: "work" });
+  await h.command("refresh");
+  h.emit("agent_settled");
+  assert.match(h.statuses.at(-1)?.[1] ?? "", /Brief G: — · N: update failed/);
+  h.emit("agent_settled");
+  assert.match(h.statuses.at(-1)?.[1] ?? "", /N: update failed/);
+  await h.command("status");
+  assert.match(h.notifications.at(-1) ?? "", /last error: model stopped: error/);
+  assert.equal(attempts, 1);
+  h.emit("session_shutdown");
+});
+
 test("restores active branch, discards in-flight replies from abandoned branches", async () => {
   const h = harness("tui", [{ type: "custom", customType: "pi-brief", data: { brief } }]);
   let resolve!: (value: typeof response) => void;

@@ -4,7 +4,7 @@ A compact, persistent **Goal + Now** session brief in Pi's **native footer/statu
 
 ## Install
 
-Requires Pi 0.87.1 and Node.js 22.18+. Once published, install with `pi install npm:pi-brief`. Until then, from a local checkout use `pi install /absolute/path/to/pi-brief` or try `pi -e /absolute/path/to/pi-brief`. The package declares `pi.extensions: ["./src/index.ts"]` and the `pi-package` discovery keyword. Installing a Pi extension executes code with your user privileges: review the source first.
+Requires Pi 0.87.1 and Node.js 22.19+. Once published, install with `pi install npm:pi-brief`. Until then, from a local checkout use `pi install /absolute/path/to/pi-brief` or try `pi -e /absolute/path/to/pi-brief`. The package declares `pi.extensions: ["./src/index.ts"]` and the `pi-package` discovery keyword. Installing a Pi extension executes code with your user privileges: review the source first.
 
 The brief is **off by default**. Explicitly select the provider/model to use:
 
