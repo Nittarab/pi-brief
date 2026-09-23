@@ -47,12 +47,11 @@ export function footerStatus(brief: Brief | undefined, activity: string): string
 export class BriefController {
   private summary: Brief;
   private pending: Activity[] = [];
-  private timer: ReturnType<typeof setTimeout> | undefined;
+  private ready = false;
   private abort: AbortController | undefined;
   private running = false;
   private closed = false;
   private failed = false;
-  private lastCall = 0;
   private calls = 0;
   private cost = 0;
   private error: string | undefined;
@@ -61,44 +60,39 @@ export class BriefController {
     private readonly summarize: Summarize,
     private readonly onChange: (brief: Brief, changed: boolean) => void,
     initial?: Brief,
-    private readonly delayMs = 15_000,
     private readonly maxCalls = 80,
-    private readonly maxCostUsd = 0.10,
+    private readonly maxCostUsd: number | null = null,
   ) {
     this.summary = initial ? { ...initial } : { ...blank };
   }
 
   get brief(): Brief { return { ...this.summary }; }
   get stats() { return { calls: this.calls, cost: this.cost, error: this.error, pending: this.pending.length, running: this.running,
-    limit: this.calls >= this.maxCalls || this.cost >= this.maxCostUsd }; }
+    limit: this.calls >= this.maxCalls || (this.maxCostUsd !== null && this.cost >= this.maxCostUsd) }; }
 
-  add(event: Activity): void {
+  add(event: Activity, summarizeNow = false): void {
     if (this.closed) return;
     const text = cleanText(event.text);
     if (!text) return;
     this.pending.push({ type: event.type, text });
     this.pending = this.pending.slice(-20);
     this.failed = false;
-    this.schedule();
+    if (summarizeNow) this.trigger();
   }
 
-  private schedule(): void {
-    if (this.closed || this.running || this.timer || !this.pending.length || this.failed || this.stats.limit) return;
-    const delay = Math.max(0, this.delayMs - (Date.now() - this.lastCall));
-    this.timer = setTimeout(() => { this.timer = undefined; void this.flush(); }, delay);
+  trigger(): void {
+    if (this.closed || !this.pending.length || this.failed) return;
+    this.ready = true;
+    void this.flush();
   }
 
   async flush(retry = false): Promise<void> {
-    if (retry) this.failed = false;
+    if (retry) { this.failed = false; this.ready = true; }
     if (this.closed || this.running || !this.pending.length || this.failed || this.stats.limit) return;
-    const wait = this.lastCall ? this.delayMs - (Date.now() - this.lastCall) : 0;
-    if (wait > 0) { this.schedule(); return; }
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = undefined;
+    this.ready = false;
     const activity = this.pending;
     this.pending = [];
     this.running = true;
-    this.lastCall = Date.now();
     this.calls++;
     const abort = new AbortController();
     this.abort = abort;
@@ -117,20 +111,20 @@ export class BriefController {
       if (!this.closed && !abort.signal.aborted) {
         this.error = cleanText(error instanceof Error ? error.message : String(error), 110);
         this.failed = true; // Never auto-retry a failed paid request.
+        this.ready = false;
         this.pending = [...activity, ...this.pending].slice(-20);
         this.onChange(this.brief, false);
       }
     } finally {
       if (this.abort === abort) this.abort = undefined;
       this.running = false;
-      this.schedule();
+      if (this.ready) void this.flush();
     }
   }
 
   close(): void {
     this.closed = true;
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = undefined;
+    this.ready = false;
     this.pending = [];
     this.abort?.abort();
   }

@@ -25,20 +25,38 @@ test("prompt includes bounded visible activities only and treats input as untrus
   assert.doesNotMatch(prompt, /tool output/);
 });
 
-test("controller batches updates, accounts for cost, persists only changed briefs and obeys call budget", async () => {
+test("meaningful events start immediately; tools wait for settlement, cost is tracked with no default USD limit", async () => {
   const changes: boolean[] = [];
   const prompts: string[] = [];
   const c = new BriefController(async (prompt) => { prompts.push(prompt); return { text: json, cost: 0.06 }; },
-    (_brief, changed) => changes.push(changed), undefined, 0, 2, 0.10);
-  c.add({ type: "user", text: "a" });
-  await c.flush();
+    (_brief, changed) => changes.push(changed), undefined, 2);
+  c.add({ type: "user", text: "a" }, true);
+  assert.equal(prompts.length, 1);
+  await c.flush(); // In-flight work is already running, not duplicated.
   c.add({ type: "tool", text: "bash: finished" });
-  await c.flush();
+  assert.equal(prompts.length, 1);
   c.add({ type: "assistant", text: "third" });
+  c.trigger();
+  assert.equal(prompts.length, 2);
   await c.flush();
   assert.deepEqual(changes, [true, false]);
-  assert.equal(prompts.length, 2);
   assert.equal(c.stats.cost, 0.12);
+  assert.equal(c.stats.limit, true);
+  c.add({ type: "user", text: "next" }, true);
+  assert.equal(c.stats.pending, 1);
+  assert.equal(prompts.length, 2);
+  c.close();
+});
+
+test("optional observed USD cap blocks subsequent calls, including explicit refresh", async () => {
+  let calls = 0;
+  const c = new BriefController(async () => { calls++; return { text: json, cost: 0.06 }; }, () => {}, undefined, 80, 0.05);
+  c.add({ type: "user", text: "request" }, true);
+  await c.flush();
+  c.add({ type: "assistant", text: "answer" });
+  c.trigger();
+  await c.flush(true);
+  assert.equal(calls, 1);
   assert.equal(c.stats.limit, true);
   assert.equal(c.stats.pending, 1);
   c.close();
@@ -47,8 +65,8 @@ test("controller batches updates, accounts for cost, persists only changed brief
 test("failure retains evidence but never silently retries; explicit retry and new events can retry", async () => {
   let calls = 0;
   const c = new BriefController(async () => { calls++; if (calls === 1) return { text: "bad", cost: 0.01 }; return { text: json, cost: 0.01 }; },
-    () => {}, undefined, 0);
-  c.add({ type: "user", text: "request" });
+    () => {});
+  c.add({ type: "user", text: "request" }, true);
   await c.flush();
   await c.flush();
   assert.equal(calls, 1);
@@ -58,20 +76,33 @@ test("failure retains evidence but never silently retries; explicit retry and ne
   await c.flush(true);
   assert.equal(calls, 2);
   assert.equal(c.stats.pending, 0);
+  c.add({ type: "assistant", text: "new result" });
+  c.trigger();
+  assert.equal(calls, 3, "new completed activity can start another request after failure");
   c.close();
 });
 
-test("rate limit holds even on explicit refresh; closing cancels a pending request", async () => {
-  let calls = 0;
-  let resolve!: (value: { text: string; cost: number }) => void;
-  const c = new BriefController(async () => { calls++; return new Promise((r) => { resolve = r; }); }, () => {}, undefined, 60_000);
-  c.add({ type: "user", text: "request" });
-  const first = c.flush();
+test("one in flight coalesces settled activity and closes without applying stale replies", async () => {
+  const prompts: string[] = [];
+  const resolvers: Array<(value: { text: string; cost: number }) => void> = [];
+  const changes: boolean[] = [];
+  const c = new BriefController(async (prompt) => { prompts.push(prompt); return new Promise((resolve) => { resolvers.push(resolve); }); },
+    (_brief, changed) => changes.push(changed));
+  c.add({ type: "user", text: "request" }, true);
+  for (let i = 0; i < 25; i++) c.add({ type: "tool", text: `bash: finished ${i}` });
   c.add({ type: "assistant", text: "more" });
-  resolve({ text: json, cost: 0 });
-  await first;
-  await c.flush(true);
-  assert.equal(calls, 1);
+  assert.equal(c.stats.pending, 20, "tool metadata stays bounded while in flight");
+  c.trigger();
+  assert.equal(prompts.length, 1);
+  resolvers[0]({ text: json, cost: 0 });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(prompts.length, 2);
+  assert.doesNotMatch(prompts[1], /finished 0\b/);
+  assert.match(prompts[1], /finished 24/);
+  assert.match(prompts[1], /more/);
   c.close();
+  resolvers[1]({ text: json, cost: 0 });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(changes, [true]);
   assert.equal(c.stats.pending, 0);
 });

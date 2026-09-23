@@ -9,7 +9,7 @@ const key = "pi-brief";
 const footerKey = " pi-brief";
 const configPath = join(homedir(), ".pi", "agent", "brief.json");
 
-type Config = { model: string; maxCalls: number; maxCostUsd: number; minIntervalMs: number };
+type Config = { model: string; maxCalls: number; maxCostUsd: number | null };
 
 function configured(): Config | undefined {
   let settings: unknown = {};
@@ -22,14 +22,13 @@ function configured(): Config | undefined {
   const model = process.env.PI_BRIEF_MODEL?.trim() || data.model;
   if (model === undefined || model === "") return undefined;
   if (typeof model !== "string" || !/^[^\s/]+\/[^\s/]+$/.test(model)) throw new Error("model must be provider/model");
-  function number(name: string, fallback: number, min: number): number {
-    const value = data[name] ?? fallback;
-    if (typeof value !== "number" || !Number.isFinite(value) || value < min ||
-        (name !== "maxCostUsd" && !Number.isInteger(value))) throw new Error(`invalid ${name}`);
-    return value;
+  const maxCalls = data.maxCalls === undefined ? 80 : data.maxCalls;
+  if (typeof maxCalls !== "number" || !Number.isSafeInteger(maxCalls) || maxCalls < 1) throw new Error("invalid maxCalls");
+  const maxCostUsd = data.maxCostUsd === undefined ? null : data.maxCostUsd;
+  if (maxCostUsd !== null && (typeof maxCostUsd !== "number" || !Number.isFinite(maxCostUsd) || maxCostUsd <= 0)) {
+    throw new Error("invalid maxCostUsd");
   }
-  return { model, maxCalls: number("maxCalls", 80, 1), maxCostUsd: number("maxCostUsd", 0.10, 0.000001),
-    minIntervalMs: number("minIntervalMs", 15_000, 1000) };
+  return { model, maxCalls, maxCostUsd };
 }
 
 function savedBrief(ctx: ExtensionContext): Brief | undefined {
@@ -97,7 +96,7 @@ export default function piBrief(pi: ExtensionAPI) {
         activity = current.stats.error ? "update failed" : current.stats.limit ? "limit reached" : "";
       }
       show(ctx);
-    }, savedBrief(ctx), config.minIntervalMs, config.maxCalls, config.maxCostUsd);
+    }, savedBrief(ctx), config.maxCalls, config.maxCostUsd);
     controller = current;
     show(ctx);
   }
@@ -109,7 +108,7 @@ export default function piBrief(pi: ExtensionAPI) {
     if (ctx.mode === "tui") ctx.ui.setStatus(footerKey, undefined);
   });
   pi.on("before_agent_start", (event, ctx) => {
-    controller?.add({ type: "user", text: event.prompt });
+    controller?.add({ type: "user", text: event.prompt }, true);
     if (controller) { activity = "working"; show(ctx); }
   });
   pi.on("tool_execution_start", (event, ctx) => {
@@ -126,7 +125,7 @@ export default function piBrief(pi: ExtensionAPI) {
     controller?.add({ type: "assistant", text });
   });
   pi.on("agent_settled", (_event, ctx) => {
-    if (controller) { activity = controller.stats.error ? "update failed" : controller.stats.limit ? "limit reached" : ""; show(ctx); void controller.flush(); }
+    if (controller) { activity = controller.stats.error ? "update failed" : controller.stats.limit ? "limit reached" : ""; show(ctx); controller.trigger(); }
   });
   pi.registerCommand("brief", {
     description: "Show the session brief; /brief status shows model, calls, cost and errors; /brief refresh retries pending activity",

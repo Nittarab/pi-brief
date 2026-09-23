@@ -22,13 +22,13 @@ function harness(mode = "tui", initial: unknown[] = []) {
   const entries: unknown[] = [];
   let branch = initial;
   let calls = 0;
-  let complete = async (_model: unknown, _context: unknown, _options: unknown): Promise<typeof response> => { calls++; return response; };
+  let complete = async (_model: unknown, _context: unknown, _options: unknown): Promise<typeof response> => response;
   let command!: (args: string, ctx: ExtensionContext) => Promise<void>;
   const ctx = {
     mode,
     ui: { setStatus: (key: string, text: string | undefined) => statuses.push([key, text]), notify: (text: string) => notifications.push(text) },
     modelRegistry: { find: (provider: string, model: string) => provider === "test" && model === "brief" ? { id: model } : undefined,
-      complete: (...args: [unknown, unknown, unknown]) => complete(...args) },
+      complete: (...args: [unknown, unknown, unknown]) => { calls++; return complete(...args); } },
     sessionManager: { getBranch: () => [...branch] },
   } as unknown as ExtensionContext;
   extension({ on: (name: string, handler: Handler) => { handlers.set(name, handler); return () => {}; },
@@ -53,17 +53,23 @@ test("native footer status remains set through work and idle; only metadata and 
     assert.ok(line.slice(0, width).includes(status[1]!), `brief visible at ${width} columns`);
   }
   h.emit("before_agent_start", { prompt: "ship it" });
+  assert.equal(h.calls, 1, "initial user prompt starts immediately");
   h.emit("tool_execution_start", { toolName: "bash", args: { password: "SENSITIVE_ARGUMENT" } });
   assert.match(h.statuses.at(-1)?.[1] ?? "", /N: using bash/);
   h.emit("tool_execution_end", { toolName: "bash", isError: false, result: "SENSITIVE_OUTPUT" });
+  assert.equal(h.calls, 1, "tool events do not start paid calls");
   h.emit("message_end", { message: { role: "assistant", content: [{ type: "thinking", thinking: "SENSITIVE_THOUGHT" }, { type: "text", text: "Checked" }] } });
+  assert.equal(h.calls, 1, "intermediate assistant messages wait for settlement");
+  await new Promise<void>((resolve) => setImmediate(resolve));
   h.emit("agent_settled");
-  await h.command("refresh");
+  assert.equal(h.calls, 2);
+  await new Promise<void>((resolve) => setImmediate(resolve));
   assert.doesNotMatch(prompt, /SENSITIVE_ARGUMENT|SENSITIVE_OUTPUT|SENSITIVE_THOUGHT/);
+  assert.match(prompt, /Checked/);
   assert.match(h.statuses.at(-1)?.[1] ?? "", /Brief G: Ship · N: Review/);
   assert.deepEqual(h.entries, [{ brief }]);
   await h.command("status");
-  assert.match(h.notifications.at(-1) ?? "", /test\/brief · 1 calls · \$0\.00100/);
+  assert.match(h.notifications.at(-1) ?? "", /test\/brief · 2 calls · \$0\.00200/);
   await h.command("");
   assert.match(h.notifications.at(-1) ?? "", /Goal: Ship[\s\S]*Blocked: —/);
   h.emit("session_shutdown");
@@ -76,10 +82,10 @@ test("a background summary finishing during work does not overwrite the live wor
   h.setComplete(async () => new Promise((r) => { resolve = r; }));
   h.emit("session_start");
   h.emit("before_agent_start", { prompt: "work" });
-  const pending = h.command("refresh");
+  assert.equal(h.calls, 1);
   h.emit("tool_execution_start", { toolName: "bash" });
   resolve(response);
-  await pending;
+  await new Promise<void>((resolve) => setImmediate(resolve));
   assert.match(h.statuses.at(-1)?.[1] ?? "", /G: Ship · N: using bash/);
   h.emit("agent_settled");
   assert.match(h.statuses.at(-1)?.[1] ?? "", /G: Ship · N: Review/);
@@ -92,7 +98,7 @@ test("failed summary stays visible in the native footer after agent settles", as
   h.setComplete(async () => { attempts++; return { ...response, stopReason: "error" }; });
   h.emit("session_start");
   h.emit("before_agent_start", { prompt: "work" });
-  await h.command("refresh");
+  await new Promise<void>((resolve) => setImmediate(resolve));
   h.emit("agent_settled");
   assert.match(h.statuses.at(-1)?.[1] ?? "", /Brief G: — · N: update failed/);
   h.emit("agent_settled");
@@ -110,12 +116,11 @@ test("restores active branch, discards in-flight replies from abandoned branches
   h.emit("session_start");
   assert.match(h.statuses.at(-1)?.[1] ?? "", /G: Ship/);
   h.emit("before_agent_start", { prompt: "old branch" });
-  const old = h.command("refresh");
   h.setBranch([]);
   h.emit("session_tree");
   assert.match(h.statuses.at(-1)?.[1] ?? "", /G: —/);
   resolve(response);
-  await old;
+  await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(h.entries.length, 0);
   h.emit("session_shutdown");
 });
@@ -130,6 +135,24 @@ test("no hidden completion or footer in headless modes", async () => {
     assert.equal(h.calls, 0);
     assert.deepEqual(h.statuses, []);
   }
+});
+
+test("configuration accepts nullable USD limit and rejects invalid limits without provider calls", async () => {
+  const directory = join(home, ".pi", "agent");
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, "brief.json"), JSON.stringify({ model: "test/brief", maxCostUsd: null, maxCalls: 2 }));
+  const h = harness();
+  h.emit("session_start");
+  h.emit("before_agent_start", { prompt: "first" });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  h.emit("before_agent_start", { prompt: "second" });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  h.emit("before_agent_start", { prompt: "third" });
+  assert.equal(h.calls, 2);
+  await h.command("status");
+  assert.match(h.notifications.at(-1) ?? "", /\$0\.00200.*limit reached/);
+  h.emit("session_shutdown");
+  rmSync(join(directory, "brief.json"));
 });
 
 test("configuration errors and missing models report a persistent off footer without calling the provider", () => {
