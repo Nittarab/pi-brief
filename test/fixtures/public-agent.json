@@ -1,0 +1,55 @@
+{
+  "source": "https://huggingface.co/datasets/nebius/SWE-agent-trajectories",
+  "license": "cc-by-4.0",
+  "attribution": "Nebius SWE-agent trajectories, CC-BY-4.0. Short excerpts only.",
+  "rows": [
+    {
+      "instance_id": "AnalogJ__lexicon-336",
+      "title": "Memset provider: TypeError: string indices must be integers",
+      "must": ["memset"],
+      "agent": "To start solving this issue, we need to reproduce the error first."
+    },
+    {
+      "instance_id": "asottile__pyupgrade-142",
+      "title": "py2-py3 invalid escape sequence should get rewritten",
+      "must": ["escape"],
+      "agent": "I will look at the rewriter and apply a patch."
+    },
+    {
+      "instance_id": "nipy__nipype-2597",
+      "title": "PR 2479 has broken my package",
+      "must": ["2479"],
+      "agent": "Submitted a patch after running the tests."
+    },
+    {
+      "instance_id": "andialbrecht__sqlparse-445",
+      "title": "strip_comments causing syntax error",
+      "must": ["strip_comments"],
+      "agent": "Checked the parser and edited the comment stripper."
+    },
+    {
+      "instance_id": "iterative__dvc-2815",
+      "title": "pipeline show: use pager instead of rendering ourselves",
+      "must": ["pager"],
+      "agent": "Ran the pipeline command to reproduce the display."
+    },
+    {
+      "instance_id": "oasis-open__cti-python-stix2-342",
+      "title": "Adding SCO to the MemoryStore results in error",
+      "must": ["memorystore"],
+      "agent": "Applied edits in the MemoryStore insert path."
+    },
+    {
+      "instance_id": "joke2k__faker-1569",
+      "title": "too long iban generated for pl-PL locale",
+      "must": ["iban"],
+      "agent": "I will generate samples and check the locale."
+    },
+    {
+      "instance_id": "akolar__ogn-lib-18",
+      "title": "Capturs parser has invalid callsign",
+      "must": ["callsign"],
+      "agent": "Kicked off a parser test and declared it fixed."
+    }
+  ]
+}

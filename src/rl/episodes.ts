@@ -13,6 +13,7 @@ export type Episode = {
   reject: string[];
   must: string[];
   forbid: string[];
+  outline?: string;
 };
 
 export const episodes: Episode[] = [

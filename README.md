@@ -32,7 +32,7 @@ Or create `~/.pi/agent/brief.json`:
 - `/brief status` displays selected model, request count, reported USD cost, pending activity, limit state, and last error.
 - `/brief refresh` processes pending activity (or retries a failed update) subject to the same limits. It does not spend on an empty queue.
 
-An RL environment in `src/rl/` scores a brief against synthetic sessions. `node --experimental-transform-types scripts/rl-rollout.mjs` compares an oracle policy with a bad standup policy. It does not call a model. Add `--model` to score the live prompt. That spends model calls. The brief call disables model thinking so the JSON is returned. A long reasoning trace was consuming the token budget and leaving the rail empty. `npm test` covers the environment without a model call.
+An RL environment in `src/rl/` scores a brief against synthetic sessions. `node --experimental-transform-types scripts/rl-rollout.mjs` compares an oracle policy with a bad standup policy. It does not call a model. Add `--model` to score the live prompt. That spends model calls. The brief call disables model thinking so the JSON is returned. A long reasoning trace was consuming the token budget and leaving the rail empty. `npm test` covers the environment without a model call. `scripts/rl-rollout.mjs --model --public` scores eight short excerpts from the Nebius SWE-agent trajectories dataset (CC-BY-4.0). The full trajectories are not stored here.
 
 The brief is one widget line above the editor, plus an optional right rail. It does not set a footer status, because that row is shared and Pi can clip it. The widget fits the locked goal and Now to the current terminal width. In print/JSON/RPC modes the extension performs no summarization, widget, or rail updates.
 

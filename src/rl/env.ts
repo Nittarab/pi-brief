@@ -69,7 +69,7 @@ export class BriefEnv {
 
   private observe(): Observation {
     const users = this.mode === "episode" ? usersOf(this.episode) : usersOf(this.episode).slice(0, this.turn + 1);
-    const outline = outlineFor(users);
+    const outline = this.mode === "episode" && this.episode.outline ? this.episode.outline : outlineFor(users);
     return {
       episode: this.episode.name,
       index: this.cursor,

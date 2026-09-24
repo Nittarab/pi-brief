@@ -7,8 +7,9 @@ console.log(`oracle ${oracle.mean}`);
 console.log(`bad    ${bad.mean}`);
 for (const row of oracle.episodes) console.log(`  ${row.name}: ${row.reward}`);
 
+const usePublic = process.argv.includes("--public");
 if (!process.argv.includes("--model")) {
-  console.log("Pass --model to score the live prompt. That spends model calls.");
+  console.log("Pass --model to score the live prompt. Add --public to use the CC-BY-4.0 agent excerpts. That spends model calls.");
   process.exit(oracle.mean > bad.mean ? 0 : 1);
 }
 
@@ -44,8 +45,12 @@ async function modelPolicy(observation) {
   return body.choices[0].message.content;
 }
 
-const scored = await Promise.all(new BriefEnv().episodes.map(async (_episode, index) => {
-  const env = new BriefEnv();
+const { fileURLToPath } = await import("node:url");
+const { loadPublicEpisodes } = await import("../src/rl/public.ts");
+const fixture = fileURLToPath(new URL("../test/fixtures/public-agent.json", import.meta.url));
+const source = usePublic ? loadPublicEpisodes(fixture) : undefined;
+const scored = await Promise.all(new BriefEnv(source).episodes.map(async (_episode, index) => {
+  const env = new BriefEnv(source);
   const observation = env.reset(index);
   const started = Date.now();
   try {
