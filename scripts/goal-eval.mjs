@@ -3,52 +3,10 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promptFor } from "../src/brief.ts";
+import { goalSessions, outlineFor } from "../src/rl/episodes.ts";
 
 const blank = { goal: "—", done: "—", now: "—", next: "—", blocked: "—" };
-const sessions = [
-  {
-    name: "skill then trace",
-    outline: `Active agent trace (latest last):
-- user: <skill name="cto-os-daily-standup"> run the standup
-- user: Can we fix the pi-brief TUI? one line on top and one on the bottom
-- user: does this do the job?
-- user: I want an agentic trace on the right that shows when the goal changes
-- user: present that trace with the model. Do not copy the tree
-- user: why is the goal daily standup? that clearly is not
-- user: if you re-analyze this transcript, what is the goal?`,
-    must: ["trace"],
-    reject: ["standup", "explain", "hilarious", "skill", "what is the goal"],
-  },
-  {
-    name: "explicit pivot",
-    outline: `Active agent trace (latest last):
-- user: Fix the brief footer
-- user: instead, write the pricing page
-- user: try again`,
-    must: ["pricing"],
-    reject: ["footer", "brief"],
-  },
-  {
-    name: "checks do not move the job",
-    outline: `Active agent trace (latest last):
-- user: Add tests for the brief parser
-- user: try again
-- user: do it
-- user: does this work?
-- user: what is the goal?`,
-    must: ["test"],
-    reject: ["does this", "try again", "what is the goal"],
-  },
-  {
-    name: "skill then a different product",
-    outline: `Active agent trace (latest last):
-- user: <skill name="cto-os-daily-standup"> run the standup
-- user: Ship the homepage copy
-- user: looks good`,
-    must: ["homepage"],
-    reject: ["standup", "skill"],
-  },
-];
+const sessions = goalSessions.map((session) => ({ ...session, outline: outlineFor(session.users), reject: session.forbid }));
 
 function score(goal, session) {
   const text = goal.toLowerCase();

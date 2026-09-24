@@ -72,6 +72,7 @@ const rejectedGoal = /standup|skill tag|explain why|why the goal|current questio
 export function acceptModelGoal(goal: string, users: TraceUser[], locked: string): string {
   const text = cleanText(goal, 140);
   if (!text || text === "—" || rejectedGoal.test(text) || isWrapper(text)) return "";
+  if (/^(?:does this|do this|try again|looks good)\b/i.test(text)) return "";
   const real = users.filter((user) => !isWrapper(user.text));
   const lockWords = new Set(contentWords(locked));
   const later = new Set(real.slice(1).flatMap((user) => contentWords(user.text)));
