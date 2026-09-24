@@ -43,24 +43,25 @@ function harness(mode = "tui", initial: unknown[] = []) {
     get calls() { return calls; }, setComplete: (fn: typeof complete) => { complete = fn; }, setBranch: (next: unknown[]) => { branch = next; } };
 }
 
-test("native footer status remains set through work and idle; only metadata and visible text reach summarizer", async () => {
+function shown(widgets: Array<[string, string[] | undefined]>): string {
+  const line = widgets.at(-1)?.[1]?.[0];
+  return typeof line === "string" ? line : "";
+}
+
+test("brief stays above the editor through work and idle; only metadata and visible text reach summarizer", async () => {
   const h = harness();
   let prompt = "";
   h.setComplete(async (_model, context) => { prompt = JSON.stringify(context); return response; });
   h.emit("session_start");
-  assert.match(h.statuses.at(-1)?.[1] ?? "", /Goal: — · Now: —/);
-  for (const width of [80, 120]) {
-    const status = h.statuses.at(-1)!;
-    const other = ["another-extension", "other status"] as const;
-    const line = [status, other].sort(([a], [b]) => a.localeCompare(b)).map(([, text]) => text).join(" ");
-    assert.ok(line.slice(0, width).includes(status[1]!), `brief visible at ${width} columns`);
-  }
+  assert.match(shown(h.widgets), /Goal: — · Now: —/);
+  assert.equal(h.statuses.at(-1)?.[1], undefined, "footer does not repeat the brief");
   h.emit("before_agent_start", { prompt: "ship it" });
   h.emit("tool_execution_start", { toolName: "bash", args: { password: "SENSITIVE_ARGUMENT" } });
   h.emit("tool_execution_end", { toolName: "bash", isError: false, result: "SENSITIVE_OUTPUT" });
   h.emit("message_end", { message: { role: "assistant", content: [{ type: "thinking", thinking: "SENSITIVE_THOUGHT" }, { type: "text", text: "Checked" }] } });
   assert.equal(h.calls, 0, "tool events and the prompt do not start paid calls");
-  assert.match(h.statuses.at(-1)?.[1] ?? "", /Goal: — · Now: —/);
+  assert.match(shown(h.widgets), /Goal: — · Now: —/);
+  assert.equal(h.statuses.at(-1)?.[1], undefined);
   h.setBranch([
     { id: "u1", type: "message", message: { role: "user", content: [{ type: "text", text: "ship it" }] } },
     { id: "a1", type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "SENSITIVE_THOUGHT" }, { type: "text", text: "Checked" }, { type: "toolCall", name: "bash", arguments: { password: "SENSITIVE_ARGUMENT" } }] } },
@@ -72,7 +73,8 @@ test("native footer status remains set through work and idle; only metadata and 
   assert.doesNotMatch(prompt, /SENSITIVE_ARGUMENT|SENSITIVE_OUTPUT|SENSITIVE_THOUGHT/);
   assert.match(prompt, /Checked/);
   assert.match(prompt, /Keep goal unchanged/);
-  assert.match(h.statuses.at(-1)?.[1] ?? "", /Goal: Ship · Now: Review/);
+  assert.match(shown(h.widgets), /Goal: Ship · Now: Review/);
+  assert.equal(h.statuses.at(-1)?.[1], undefined);
   assert.deepEqual(h.entries, [{ brief }]);
   await h.command("status");
   assert.match(h.notifications.at(-1) ?? "", /test\/brief · 1 calls · \$0\.00100/);
@@ -80,6 +82,7 @@ test("native footer status remains set through work and idle; only metadata and 
   assert.match(h.notifications.at(-1) ?? "", /Goal: Ship[\s\S]*Blocked: —/);
   h.emit("session_shutdown");
   assert.deepEqual(h.statuses.at(-1), [" pi-brief", undefined]);
+  assert.deepEqual(h.widgets.at(-1), ["pi-brief", undefined]);
 });
 
 test("tool activity does not replace the stable Goal and Now line", async () => {
@@ -90,7 +93,8 @@ test("tool activity does not replace the stable Goal and Now line", async () => 
   h.emit("session_start");
   await new Promise<void>((resolve) => setImmediate(resolve));
   h.emit("tool_execution_start", { toolName: "bash" });
-  assert.match(h.statuses.at(-1)?.[1] ?? "", /Goal: Ship · Now: Review/);
+  assert.match(shown(h.widgets), /Goal: Ship · Now: Review/);
+  assert.equal(h.statuses.at(-1)?.[1], undefined);
   assert.equal(h.calls, 1, "startup reads the current trace once");
   h.emit("agent_settled");
   await new Promise<void>((resolve) => setImmediate(resolve));
@@ -112,7 +116,8 @@ test("startup summarizes recent visible text and shows the same line above the e
   assert.match(prompt, /Ship the footer/);
   assert.match(prompt, /Footer is visible/);
   assert.doesNotMatch(prompt, /SECRET_THOUGHT|SECRET_TOOL/);
-  assert.deepEqual(h.widgets.at(-1)?.[1], [h.statuses.at(-1)?.[1]]);
+  assert.match(shown(h.widgets), /Goal: Ship · Now: Review/);
+  assert.equal(h.statuses.at(-1)?.[1], undefined);
   h.emit("session_shutdown");
   assert.deepEqual(h.widgets.at(-1), ["pi-brief", undefined]);
 });
@@ -143,7 +148,7 @@ test("shows the provider error instead of only the stop reason", async () => {
   h.emit("session_shutdown");
 });
 
-test("failed summary stays visible in the native footer after agent settles", async () => {
+test("failed summary stays visible above the editor after agent settles", async () => {
   const h = harness();
   let attempts = 0;
   h.setComplete(async () => { attempts++; return { ...response, stopReason: "error" }; });
@@ -151,9 +156,10 @@ test("failed summary stays visible in the native footer after agent settles", as
   h.emit("session_start");
   await new Promise<void>((resolve) => setImmediate(resolve));
   h.emit("agent_settled");
-  assert.match(h.statuses.at(-1)?.[1] ?? "", /Brief · update failed/);
+  assert.match(shown(h.widgets), /Brief · update failed/);
+  assert.equal(h.statuses.at(-1)?.[1], undefined);
   h.emit("agent_settled");
-  assert.match(h.statuses.at(-1)?.[1] ?? "", /update failed/);
+  assert.match(shown(h.widgets), /update failed/);
   await h.command("status");
   assert.match(h.notifications.at(-1) ?? "", /last error: model stopped: error/);
   assert.equal(attempts, 1);
@@ -168,11 +174,12 @@ test("restores active branch, discards in-flight replies from abandoned branches
   let resolve!: (value: typeof response) => void;
   h.setComplete(async () => new Promise((r) => { resolve = r; }));
   h.emit("session_start");
-  assert.match(h.statuses.at(-1)?.[1] ?? "", /Goal: Ship/);
+  assert.match(shown(h.widgets), /Goal: Ship/);
   assert.equal(h.calls, 1);
   h.setBranch([]);
   h.emit("session_tree");
-  assert.match(h.statuses.at(-1)?.[1] ?? "", /Goal: —/);
+  assert.match(shown(h.widgets), /Goal: —/);
+  assert.equal(h.statuses.at(-1)?.[1], undefined);
   resolve(response);
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(h.entries.length, 0);
@@ -188,6 +195,7 @@ test("no hidden completion or footer in headless modes", async () => {
     await h.command("refresh");
     assert.equal(h.calls, 0);
     assert.deepEqual(h.statuses, []);
+    assert.deepEqual(h.widgets, []);
   }
 });
 
@@ -209,18 +217,20 @@ test("configuration accepts nullable USD limit and rejects invalid limits withou
   rmSync(join(directory, "brief.json"));
 });
 
-test("configuration errors and missing models report a persistent off footer without calling the provider", () => {
+test("configuration errors and missing models report a persistent off line without calling the provider", () => {
   delete process.env.PI_BRIEF_MODEL;
   const h = harness();
   h.emit("session_start");
-  assert.match(h.statuses.at(-1)?.[1] ?? "", /off: configure model/);
+  assert.match(shown(h.widgets), /off: configure model/);
+  assert.equal(h.statuses.at(-1)?.[1], undefined);
   h.emit("session_shutdown");
   const directory = join(home, ".pi", "agent");
   mkdirSync(directory, { recursive: true });
   writeFileSync(join(directory, "brief.json"), JSON.stringify({ model: "missing/model", maxCostUsd: -1 }));
   const invalid = harness();
   invalid.emit("session_start");
-  assert.match(invalid.statuses.at(-1)?.[1] ?? "", /config error/);
+  assert.match(shown(invalid.widgets), /config error/);
+  assert.equal(invalid.statuses.at(-1)?.[1], undefined);
   assert.equal(invalid.calls, 0);
   rmSync(join(directory, "brief.json"));
   process.env.PI_BRIEF_MODEL = "test/brief";

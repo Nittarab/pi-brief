@@ -118,7 +118,7 @@ export function display(brief: Brief, state?: string): string[] {
   return state ? [`Brief · ${state}`, ...lines] : ["Brief", ...lines];
 }
 
-// This line is rendered by Pi's native footer, alongside (not instead of) other extension statuses.
+// Compact Goal + Now line. The extension shows it once, above the editor.
 export function footerStatus(brief: Brief | undefined, state = ""): string {
   if (state) return `Brief · ${cleanText(state, 36)}`;
   return `Goal: ${cleanText(brief?.goal ?? "—", 22)} · Now: ${cleanText(brief?.now ?? "—", 22)}`;

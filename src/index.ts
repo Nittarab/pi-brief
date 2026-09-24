@@ -6,7 +6,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { BriefController, cleanText, display, footerStatus, isBrief, sessionOutline, type Brief } from "./brief.ts";
 
 const key = "pi-brief";
-// Footer statuses are sorted by key before Pi truncates the shared line.
+// Older builds wrote this footer key. Clear it so the line is not shown twice.
 const footerKey = " pi-brief";
 const widgetKey = "pi-brief";
 const configPath = join(homedir(), ".pi", "agent", "brief.json");
@@ -77,9 +77,9 @@ export default function piBrief(pi: ExtensionAPI) {
     const text = footerStatus(controller?.brief, state);
     const theme = (ctx.ui as { theme?: { fg?: (color: string, value: string) => string } }).theme;
     const shown = theme?.fg ? theme.fg("accent", text) : text;
-    ctx.ui.setStatus(footerKey, shown);
-    // The native footer can be clipped. Keep the same line directly above the editor.
-    if ("setWidget" in ctx.ui) ctx.ui.setWidget(widgetKey, [shown]);
+    // One line only, above the editor. The footer shares a truncated row.
+    ctx.ui.setStatus(footerKey, undefined);
+    ctx.ui.setWidget(widgetKey, [shown]);
   }
 
   function start(ctx: ExtensionContext) {

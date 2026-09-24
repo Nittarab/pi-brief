@@ -1,6 +1,6 @@
 # pi-brief
 
-A compact, persistent **Goal + Now** session brief in Pi's **native footer/status bar**, with a full five-field brief on demand. Personal open-source Pi extension by Nittarab for Pi 0.87.1; not a Weft plugin.
+A compact, persistent **Goal + Now** session brief on one line above Pi's editor, with a full five-field brief on demand. Personal open-source Pi extension by Nittarab for Pi 0.87.1; not a Weft plugin.
 
 ## Install
 
@@ -22,16 +22,16 @@ Or create `~/.pi/agent/brief.json`:
 }
 ```
 
-`PI_BRIEF_MODEL` overrides the file's `model`, while the file's optional limits still apply. Model names must be exact `provider/model-id` identifiers found in Pi's model registry; no automatic fallback to another model/provider. Configure authentication for that provider in Pi separately. Invalid configuration and missing models leave a visible **off/error** footer instead of making requests. `maxCalls` is an optional positive integer (default 80 per session/branch). `maxCostUsd` defaults to `null` (no USD limit); set a finite positive number to stop after observed spend reaches it. Reported cost is tracked even with the USD limit off. No minimum request interval is configured. Calls and observed cost reset on session/branch navigation; the latest brief is restored from the active session branch.
+`PI_BRIEF_MODEL` overrides the file's `model`, while the file's optional limits still apply. Model names must be exact `provider/model-id` identifiers found in Pi's model registry; no automatic fallback to another model/provider. Configure authentication for that provider in Pi separately. Invalid configuration and missing models leave a visible **off/error** line instead of making requests. `maxCalls` is an optional positive integer (default 80 per session/branch). `maxCostUsd` defaults to `null` (no USD limit); set a finite positive number to stop after observed spend reaches it. Reported cost is tracked even with the USD limit off. No minimum request interval is configured. Calls and observed cost reset on session/branch navigation; the latest brief is restored from the active session branch.
 
 ## Use
 
-- The line above the editor, and the footer, show `Goal: … · Now: …`. Goal is the user task on the active branch. Now is the current objective on that path, not the latest tool. The line does not change on every tool call. It changes only when a summary of the session tree and active agent trace changes the brief. The same line is above the editor because Pi can clip the footer. It also reports when disabled, an update failed, or a limit was reached.
+- One line above the editor shows `Goal: … · Now: …`. The footer does not repeat it. Goal is the user task on the active branch. Now is the current objective on that path, not the latest tool. The line does not change on every tool call. It changes only when a summary of the session tree and active agent trace changes the brief. It also reports when disabled, an update failed, or a limit was reached.
 - `/brief` displays Goal, Done, Now, Next, and Blocked. The summary reads the `/tree` shape and the active agent trace: user prompts, visible assistant text, and tool names. It does not read tool arguments, tool output, or thinking. Goal stays the same unless the active branch shows that the user changed the task. Other branches are alternatives, not the current task. The model is instructed to mark Done only for verified progress; the brief can still be inaccurate. Check important facts yourself.
 - `/brief status` displays selected model, request count, reported USD cost, pending activity, limit state, and last error.
 - `/brief refresh` processes pending activity (or retries a failed update) subject to the same limits. It does not spend on an empty queue.
 
-Pi 0.87.1 renders extension statuses in **one native footer line sorted by key**, then truncates it to terminal width. The brief uses an early-sorting key and keeps Goal + Now compact (normally under 65 columns). The same line is installed as a one-line widget above the editor so it remains visible when the footer is clipped. No replacement footer is installed. In print/JSON/RPC modes the extension performs no summarization, widget, or footer updates.
+The brief is one widget line above the editor. It does not set a footer status, because that row is shared and Pi can clip it. Goal + Now stays compact (normally under 65 columns). In print/JSON/RPC modes the extension performs no summarization or widget updates.
 
 ## Privacy, security, and cost
 
