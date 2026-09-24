@@ -3,8 +3,8 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { BriefController, briefLine, cleanText, display, isBrief, sessionOutline, type Brief } from "./brief.ts";
-import { assess, emptyMemory, emptyRail, phrase, railColor, renderRail, stepsFrom, usersFrom, type Rail, type TraceMemory } from "./trace.ts";
+import { BriefController, briefLine, cleanText, display, isBrief, parsePresented, sessionOutline, type Brief, type Presented } from "./brief.ts";
+import { assess, emptyMemory, emptyRail, phrase, railColor, renderRail, usersFrom, type Rail, type TraceMemory } from "./trace.ts";
 
 const key = "pi-brief";
 // Older builds wrote this footer key. Clear it so the line is not shown twice.
@@ -49,6 +49,16 @@ function modelFailure(reply: { stopReason: string; errorMessage?: string }): str
 function outlineFor(ctx: ExtensionContext): string {
   const manager = ctx.sessionManager as { getBranch: () => unknown[]; getTree?: () => unknown[] };
   return sessionOutline(manager.getBranch(), manager.getTree?.() ?? []);
+}
+
+function savedPresented(ctx: ExtensionContext): Presented[] {
+  for (const entry of ctx.sessionManager.getBranch().reverse()) {
+    if (entry.type === "custom" && entry.customType === key) {
+      const data = entry.data as { trace?: unknown } | undefined;
+      return Array.isArray(data?.trace) ? parsePresented(JSON.stringify({ trace: data.trace })) : [];
+    }
+  }
+  return [];
 }
 
 function savedBrief(ctx: ExtensionContext): Brief | undefined {
@@ -112,10 +122,10 @@ export default function piBrief(pi: ExtensionAPI) {
     const users = usersFrom(branch);
     if (pendingUser && users.at(-1)?.text !== pendingUser) users.push({ text: pendingUser });
     const next = assess(memory, {
-      users, steps: stepsFrom(branch), modelGoal: controller?.brief.goal, modelNow: controller?.brief.now, inFlight,
+      users, steps: [], modelGoal: controller?.brief.goal, modelNow: controller?.brief.now, inFlight,
     });
     memory = next.memory;
-    rail = next.rail;
+    rail = { ...next.rail, presented: controller?.presented ?? [] };
     show(ctx);
   }
 
@@ -176,7 +186,7 @@ export default function piBrief(pi: ExtensionAPI) {
         systemPrompt: "Summarize only the provided data. Output one JSON object, without markdown.",
         messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
       }, {
-        signal, timeoutMs: 30_000, maxRetries: 0, maxTokens: 400, cacheRetention: "none",
+        signal, timeoutMs: 30_000, maxRetries: 0, maxTokens: 700, cacheRetention: "none",
         // OpenCode Go rejects requests that omit this routing id. Other providers ignore it.
         sessionId: routingSessionId(ctx, fallbackSessionId),
       });
@@ -184,12 +194,12 @@ export default function piBrief(pi: ExtensionAPI) {
         cost: reply.usage.cost.total, error: modelFailure(reply) };
     }, (brief, changed) => {
       if (controller !== current) return; // A switched session/branch cannot write to the active branch.
-      if (changed) pi.appendEntry(key, { brief }); // Branch-local, excluded from the agent's context.
+      if (changed) pi.appendEntry(key, { brief, trace: current.presented }); // Branch-local, excluded from the agent's context.
       if (activity !== "working" && !activity.startsWith("using ")) {
         activity = current.stats.error ? "update failed" : current.stats.limit ? "limit reached" : "";
       }
       refresh(ctx);
-    }, restored, config.maxCalls, config.maxCostUsd);
+    }, restored, config.maxCalls, config.maxCostUsd, savedPresented(ctx));
     controller = current;
     refresh(ctx);
     const outline = outlineFor(ctx);

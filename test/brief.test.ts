@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BriefController, briefLine, cleanText, isBrief, parseBrief, promptFor, sessionOutline, type Brief } from "../src/brief.ts";
+import { BriefController, briefLine, cleanText, isBrief, parseBrief, parsePresented, promptFor, sessionOutline, type Brief } from "../src/brief.ts";
 
 const summary: Brief = { goal: "Ship brief", done: "Tests passed", now: "Documenting", next: "Publish", blocked: "—" };
 const json = JSON.stringify(summary);
@@ -10,6 +10,19 @@ test("parsing requires all string fields, sanitizes control characters and persi
   assert.throws(() => parseBrief('{"goal":"only"}'), /missing brief field/);
   assert.equal(isBrief(["not a brief"]), false);
   assert.equal(cleanText("hello\x1b[31m\r\nworld"), "hello [31m world");
+});
+
+test("presented trace is parsed from the brief JSON and copies are rejected", () => {
+  const text = JSON.stringify({ goal: "Ship", done: "—", now: "—", next: "—", blocked: "—", trace: [
+    { who: "user", kind: "task", text: "keep the brief useful" },
+    { who: "nope", kind: "turn", text: "drop me" },
+    { who: "agent", kind: "drift", text: "left the task" },
+  ]});
+  assert.deepEqual(parsePresented(text), [
+    { who: "user", kind: "task", text: "keep the brief useful" },
+    { who: "agent", kind: "drift", text: "left the task" },
+  ]);
+  assert.deepEqual(parsePresented('{"goal":"Ship"}'), []);
 });
 
 test("brief line uses the row width and keeps both labels", () => {
@@ -52,6 +65,7 @@ test("prompt includes bounded visible activities only and treats input as untrus
   const outlinePrompt = promptFor(summary, [{ type: "user", text: "Active agent trace" }], true);
   assert.match(outlinePrompt, /Keep goal unchanged/);
   assert.match(outlinePrompt, /unfinished objective/);
+  assert.match(outlinePrompt, /Do not copy the source messages/);
   assert.match(outlinePrompt, /not a narration of the latest message or tool/);
   assert.doesNotMatch(prompt, /tool output/);
 });

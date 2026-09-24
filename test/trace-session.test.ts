@@ -34,7 +34,7 @@ test("simulated session drives the rail without extra model calls", async () => 
     },
     modelRegistry: {
       find: () => ({ id: "brief" }),
-      complete: async () => { calls.push("model"); return { content: [{ type: "text", text: JSON.stringify({ goal: "Publish the npm package", done: "—", now: "Review", next: "—", blocked: "—" }) }], stopReason: "stop", usage: { cost: { total: 0.001 } } }; },
+      complete: async () => { calls.push("model"); return { content: [{ type: "text", text: JSON.stringify({ goal: "Publish the npm package", done: "—", now: "Review", next: "—", blocked: "—", trace: [{ who: "user", kind: "task", text: "keep one job" }, { who: "agent", kind: "drift", text: "left the brief for publishing" }] }) }], stopReason: "stop", usage: { cost: { total: 0.001 } } }; },
     },
     sessionManager: { getBranch: () => branch },
   } as unknown as ExtensionContext;
@@ -56,21 +56,22 @@ test("simulated session drives the rail without extra model calls", async () => 
   handlers.get("tool_execution_start")?.({ toolName: "bash", args: { password: "SECRET" } }, ctx);
   assert.equal(calls.length, 0, "the live rail does not call the model");
   assert.doesNotMatch(rails.join("\n"), /SECRET/);
-  assert.match(rails.join("\n"), /● Fix the brief line/);
+  assert.match(rails.join("\n"), /◇ reading/);
   assert.doesNotMatch(rails.join("\n"), /tool|bash|SECRET/);
 
   handlers.get("agent_settled")?.({}, ctx);
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(calls.length, 1);
-  assert.match(rails.join("\n"), /! Publish the npm package/);
-  assert.match(rails.join("\n"), /Fix the brief line/);
+  assert.match(rails.join("\n"), /keep one job/);
+  assert.match(rails.join("\n"), /left the brief for publishing/);
+  assert.doesNotMatch(rails.join("\n"), /Fix the brief line/);
 
   branch = [
     { id: "u1", type: "message", message: { role: "user", content: "Fix the brief line" } },
     { id: "u2", type: "message", message: { role: "user", content: "instead, add a right rail" } },
   ];
   handlers.get("before_agent_start")?.({ prompt: "instead, add a right rail" }, ctx);
-  assert.match(rails.join("\n"), /add a right rail/);
+  assert.doesNotMatch(rails.join("\n"), /add a right rail/);
   assert.equal(calls.length, 1, "a user pivot does not spend a call by itself");
 
   branch = [{ id: "u9", type: "message", message: { role: "user", content: "Write the standup" } }];

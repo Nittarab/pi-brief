@@ -20,8 +20,8 @@ test("simulated stable session keeps the lock and ignores short follow-ups", () 
   assert.equal(isPivot("ok do it"), false);
   const rail = renderRail(first.rail, 34, 16).join("\n");
   assert.match(rail, /● Fix the brief line/);
-  assert.match(rail, /◇ fit the row/);
-  assert.doesNotMatch(rail, /bash|tool|user |assistant /);
+  assert.match(rail, /◇ reading/);
+  assert.doesNotMatch(rail, /fit the row|bash|tool/);
   for (const line of rail.split("\n")) assert.ok(line.length <= 34, line);
 });
 
@@ -55,7 +55,8 @@ test("simulated user pivot moves the lock and a side ask does not", () => {
   assert.equal(side.memory.locked, "Fix the brief line");
   assert.equal(isSuspect("Fix the brief line", "add a right rail"), true);
   assert.match(side.rail.suspect, /add a right rail/);
-  assert.match(renderRail(side.rail, 40, 14).join("\n"), /\? add a right rail/);
+  assert.equal(side.rail.suspect.includes("add a right rail"), true);
+  assert.doesNotMatch(renderRail(side.rail, 40, 14).join("\n"), /add a right rail/);
 
   const moved = run(
     [{ id: "u1", text: "Fix the brief line" }, { id: "u2", text: "instead, add a right rail" }],
@@ -95,12 +96,13 @@ test("wording drops skill tags, paths, and process openers", () => {
 test("rail fills the requested height and never exceeds the width", () => {
   const assessed = run(
     [{ id: "u1", text: "Fix the brief line so the session stays on the task" }],
-    Array.from({ length: 12 }, (_, index) => ({ role: "assistant" as const, text: `turn ${index}` })),
+    [],
   );
+  assessed.rail.presented = Array.from({ length: 12 }, (_, index) => ({ who: "agent" as const, kind: "turn" as const, text: `decided ${index}` }));
   const lines = renderRail(assessed.rail, 28, 9);
   assert.equal(lines.length, 9);
-  assert.match(lines[0] ?? "", /● /);
-  assert.match(lines.join("\n"), /turn 11/);
+  assert.match(lines.join("\n"), /decided 11/);
+  assert.doesNotMatch(lines.join("\n"), /Fix the brief line/);
   assert.doesNotMatch(lines.join("\n"), /tool/);
   for (const line of lines) assert.ok(line.length <= 28, line);
 });

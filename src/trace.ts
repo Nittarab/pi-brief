@@ -1,10 +1,10 @@
-import { cleanText } from "./brief.ts";
+import { cleanText, type Presented } from "./brief.ts";
 
 export type TraceUser = { id?: string; text: string };
 export type TraceStep = { role: "user" | "assistant" | "tool"; text: string };
 export type TraceMemory = { locked: string; lockBranch: string };
 export type RailStep = { flag: "●" | "◇" | "!" | "?"; text: string };
-export type Rail = { locked: string; drift: string; suspect: string; left: string; steps: RailStep[] };
+export type Rail = { locked: string; drift: string; suspect: string; left: string; steps: RailStep[]; presented: Presented[] };
 
 const continuations = new Set([
   "ok", "okay", "yes", "no", "y", "n", "k", "yep", "nope", "do it", "try again", "continue",
@@ -15,7 +15,7 @@ const stops = new Set(["a", "an", "the", "to", "of", "and", "or", "for", "in", "
 const pivot = /\b(new task|instead|forget that|forget the|stop doing|change the goal|different task|different goal|switch to)\b|^actually[, ]/i;
 
 export const emptyMemory = (): TraceMemory => ({ locked: "", lockBranch: "" });
-export const emptyRail = (): Rail => ({ locked: "", drift: "", suspect: "", left: "", steps: [] });
+export const emptyRail = (): Rail => ({ locked: "", drift: "", suspect: "", left: "", steps: [], presented: [] });
 
 function contentWords(text: string): string[] {
   return cleanText(text).toLowerCase().replace(/[^a-z0-9+/.-]+/g, " ").split(" ").filter((word) => word && !stops.has(word));
@@ -106,7 +106,7 @@ export function assess(memory: TraceMemory, input: {
   }));
   return {
     memory: { locked, lockBranch },
-    rail: { locked, drift: driftText(locked, users, input.modelGoal, input.modelNow), suspect, left, steps },
+    rail: { locked, drift: driftText(locked, users, input.modelGoal, input.modelNow), suspect, left, steps, presented: [] },
   };
 }
 
@@ -196,19 +196,15 @@ function mark(icon: string, text: string, width: number): string {
 export function renderRail(rail: Rail, width: number, height: number): string[] {
   const columns = Math.max(4, Math.floor(width));
   const rows = Math.max(1, Math.floor(height));
-  const lock = phrase(rail.locked);
-  const ask = phrase(rail.suspect);
-  const header = [mark("●", lock || "—", columns)];
-  if (rail.drift) header.push(mark("!", phrase(rail.drift), columns));
-  if (rail.suspect) header.push(mark("?", ask, columns));
+  const presented = rail.presented ?? [];
+  const header: string[] = [];
+  if (!presented.length) header.push(mark("●", phrase(rail.locked) || "—", columns));
+  if (rail.drift && !presented.some((step) => step.kind === "drift")) header.push(mark("!", phrase(rail.drift), columns));
   if (rail.left) header.push(mark("↩", phrase(rail.left), columns));
   const room = Math.max(0, rows - header.length);
-  const spine = rail.steps
-    .filter((step) => {
-      const text = phrase(step.text);
-      return text !== lock && text !== ask;
-    })
-    .map((step) => mark(step.flag, phrase(step.text), columns));
+  const spine = presented.length
+    ? presented.map((step) => mark(step.kind === "drift" || step.kind === "pivot" ? "!" : step.who === "agent" ? "◇" : "●", step.text, columns))
+    : [mark("◇", "reading", columns)];
   const visible = spine.length > room ? [mark("…", "", columns), ...spine.slice(-(Math.max(0, room - 1)))] : spine;
   const lines = [...header, ...visible];
   while (lines.length < rows) lines.push("");

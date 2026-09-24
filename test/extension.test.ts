@@ -85,7 +85,7 @@ test("brief stays above the editor through work and idle; only metadata and visi
   assert.match(prompt, /Keep goal unchanged/);
   assert.match(shown(h.widgets), /Goal: ship it · Now: Review/);
   assert.equal(h.statuses.at(-1)?.[1], undefined);
-  assert.deepEqual(h.entries, [{ brief }]);
+  assert.deepEqual(h.entries, [{ brief, trace: [] }]);
   await h.command("status");
   assert.match(h.notifications.at(-1) ?? "", /test\/brief · 1 calls · \$0\.00100/);
   await h.command("");
