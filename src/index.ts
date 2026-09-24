@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -29,6 +30,18 @@ function configured(): Config | undefined {
     throw new Error("invalid maxCostUsd");
   }
   return { model, maxCalls, maxCostUsd };
+}
+
+function routingSessionId(ctx: ExtensionContext, fallback: string): string {
+  const read = (ctx.sessionManager as { getSessionId?: () => string }).getSessionId;
+  const id = read?.call(ctx.sessionManager);
+  return typeof id === "string" && id.trim() ? id.trim() : fallback;
+}
+
+function modelFailure(reply: { stopReason: string; errorMessage?: string }): string | undefined {
+  if (reply.stopReason === "stop") return undefined;
+  const detail = cleanText(reply.errorMessage ?? "", 90);
+  return detail ? `model stopped: ${reply.stopReason}: ${detail}` : `model stopped: ${reply.stopReason}`;
 }
 
 function savedBrief(ctx: ExtensionContext): Brief | undefined {
@@ -82,13 +95,18 @@ export default function piBrief(pi: ExtensionAPI) {
     }
     modelName = config.model;
     activity = "ready";
+    const fallbackSessionId = randomUUID();
     const current = new BriefController(async (prompt, signal) => {
       const reply = await ctx.modelRegistry.complete(model, {
         systemPrompt: "Summarize only the provided data. Output one JSON object, without markdown.",
         messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
-      }, { signal, timeoutMs: 30_000, maxRetries: 0, maxTokens: 400, cacheRetention: "none" });
+      }, {
+        signal, timeoutMs: 30_000, maxRetries: 0, maxTokens: 400, cacheRetention: "none",
+        // OpenCode Go rejects requests that omit this routing id. Other providers ignore it.
+        sessionId: routingSessionId(ctx, fallbackSessionId),
+      });
       return { text: reply.content.filter((part) => part.type === "text").map((part) => part.text).join(""),
-        cost: reply.usage.cost.total, error: reply.stopReason === "stop" ? undefined : `model stopped: ${reply.stopReason}` };
+        cost: reply.usage.cost.total, error: modelFailure(reply) };
     }, (brief, changed) => {
       if (controller !== current) return; // A switched session/branch cannot write to the active branch.
       if (changed) pi.appendEntry(key, { brief }); // Branch-local, excluded from the agent's context.

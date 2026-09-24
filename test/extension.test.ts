@@ -92,6 +92,32 @@ test("a background summary finishing during work does not overwrite the live wor
   h.emit("session_shutdown");
 });
 
+test("forwards the Pi session id on every summary request", async () => {
+  const h = harness();
+  (h.ctx.sessionManager as { getSessionId?: () => string }).getSessionId = () => "session-123";
+  let sessionId = "";
+  h.setComplete(async (_model, _context, options) => {
+    sessionId = (options as { sessionId?: string }).sessionId ?? "";
+    return response;
+  });
+  h.emit("session_start");
+  h.emit("before_agent_start", { prompt: "ship it" });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(sessionId, "session-123");
+  h.emit("session_shutdown");
+});
+
+test("shows the provider error instead of only the stop reason", async () => {
+  const h = harness();
+  h.setComplete(async () => ({ ...response, stopReason: "error", errorMessage: "400 MissingSessionID" }));
+  h.emit("session_start");
+  h.emit("before_agent_start", { prompt: "work" });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await h.command("status");
+  assert.match(h.notifications.at(-1) ?? "", /last error: model stopped: error: 400 MissingSessionID/);
+  h.emit("session_shutdown");
+});
+
 test("failed summary stays visible in the native footer after agent settles", async () => {
   const h = harness();
   let attempts = 0;
