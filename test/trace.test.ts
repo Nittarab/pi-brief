@@ -6,6 +6,24 @@ function run(users: TraceUser[], steps: TraceStep[] = [], modelGoal = "", modelN
   return assess(memory, { users, steps, modelGoal, modelNow });
 }
 
+test("a skill tag does not become the goal", () => {
+  const assessed = run([
+    { id: "u1", text: '<skill name="cto-os-daily-standup">run the standup</skill>' },
+    { id: "u2", text: "/Users/me/CleanShot.png Can we fix the pi-brief TUI?" },
+  ]);
+  assert.equal(assessed.memory.locked, "Can we fix the pi-brief TUI?");
+  assert.doesNotMatch(assessed.memory.locked, /standup|CleanShot/);
+  const kept = assess(assessed.memory, {
+    users: [
+      { id: "u1", text: '<skill name="cto-os-daily-standup">run the standup</skill>' },
+      { id: "u2", text: "Can we fix the pi-brief TUI?" },
+      { id: "u3", text: "try again" },
+    ],
+    steps: [],
+  });
+  assert.equal(kept.memory.locked, "Can we fix the pi-brief TUI?");
+});
+
 test("simulated stable session keeps the lock and ignores short follow-ups", () => {
   const first = run(
     [{ id: "u1", text: "Fix the brief line" }, { id: "u2", text: "ok do it" }],

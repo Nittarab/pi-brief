@@ -85,7 +85,7 @@ export function parsePresented(text: string): Presented[] {
 
 export function promptFor(previous: Brief, events: Activity[], outline = false): string {
   const rules = outline
-    ? "Read the session tree and the active agent trace. Keep goal unchanged unless the active branch shows that the user changed the task. Now is the unfinished objective, not a narration of the latest message or tool. Other branches are alternatives, not the current task."
+    ? "Read the session tree and the active agent trace. A skill tag is not the task. Ignore it. Keep goal unchanged unless the active branch shows that the user changed the task. Now is the unfinished objective, not a narration of the latest message or tool. Other branches are alternatives, not the current task."
     : "Maintain a factual, compact session brief.";
   const source = outline ? "Session tree and active agent trace" : "New activity (latest last)";
   const trace = `Also return key trace as an object, not an array: {"task":"","pivot":"","drift":"","steps":[]}. Do not assign who or kind. task is the current job only, max 32 characters. If the source has a Locked task, task must stay that unless the user changed it. Do not open with an abandoned request. pivot is the new job if the user changed the task, else "". drift is the wrong job if the agent left the locked task, else "". steps is 2 to 4 current decisions or results, each max 32 characters, present tense. A step is not a diary. Bad step: "Applied edits rewriting the trace". Good step: "rail shows decisions, not chat". Bad task: "Kicked off a standup". Good task: "model trace, not the chat". Do not copy the source messages. Do not quote them. Omit tool names, file paths, and skill tags.`;

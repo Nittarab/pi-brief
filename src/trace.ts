@@ -54,9 +54,14 @@ export function isSuspect(locked: string, text: string): boolean {
   return words.length >= 3 && overlap(contentWords(locked), words) < 0.34;
 }
 
+export function isWrapper(text: string): boolean {
+  const raw = cleanText(text, 400);
+  return !raw || /<skill\s+name=/i.test(raw) || /^\/\S+$/.test(raw);
+}
+
 function lockText(text: string): string {
-  const plain = cleanText(text, 140);
-  return plain.replace(/^(?:actually[, ]+|instead[, ]+|new task[:, ]+)/i, "").trim() || plain;
+  const plain = cleanText(text, 400).replace(/^(?:\/\S+\s+)+/, "");
+  return cleanText(plain, 140).replace(/^(?:actually[, ]+|instead[, ]+|new task[:, ]+)/i, "").trim() || cleanText(plain, 140);
 }
 
 export function branchKey(users: TraceUser[]): string {
@@ -89,9 +94,12 @@ export function assess(memory: TraceMemory, input: {
   let locked = memory.locked;
   let lockBranch = memory.lockBranch;
   const key = branchKey(users);
-  if (!locked && users[0]) {
-    locked = lockText(users[0].text);
-    lockBranch = key;
+  if (!locked || isWrapper(locked)) {
+    const real = users.find((user) => !isWrapper(user.text));
+    if (real) {
+      locked = lockText(real.text);
+      lockBranch = key;
+    }
   }
   if (lockBranch && key === lockBranch) {
     for (const user of users) if (isPivot(user.text)) locked = lockText(user.text);

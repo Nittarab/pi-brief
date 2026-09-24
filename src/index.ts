@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { BriefController, briefLine, cleanText, display, isBrief, parsePresented, sessionOutline, type Brief, type Presented } from "./brief.ts";
-import { assess, emptyMemory, emptyRail, phrase, railColor, renderRail, usersFrom, type Rail, type TraceMemory } from "./trace.ts";
+import { assess, emptyMemory, emptyRail, isWrapper, phrase, railColor, renderRail, usersFrom, type Rail, type TraceMemory } from "./trace.ts";
 
 const key = "pi-brief";
 // Older builds wrote this footer key. Clear it so the line is not shown twice.
@@ -50,7 +50,8 @@ function outlineFor(ctx: ExtensionContext, lock = ""): string {
   const manager = ctx.sessionManager as { getBranch: () => unknown[]; getTree?: () => unknown[] };
   const tree = sessionOutline(manager.getBranch(), manager.getTree?.() ?? []);
   if (!tree) return "";
-  return lock ? `Locked task: ${lock}\n${tree}` : tree;
+  const task = lock && !isWrapper(lock) ? phrase(lock) : "";
+  return task ? `Locked task: ${task}\n${tree}` : tree;
 }
 
 function savedPresented(ctx: ExtensionContext): Presented[] {
