@@ -13,14 +13,23 @@ test("parsing requires all string fields, sanitizes control characters and persi
 });
 
 test("presented trace is parsed from the brief JSON and copies are rejected", () => {
-  const text = JSON.stringify({ goal: "Ship", done: "—", now: "—", next: "—", blocked: "—", trace: [
-    { who: "user", kind: "task", text: "keep the brief useful" },
-    { who: "nope", kind: "turn", text: "drop me" },
-    { who: "agent", kind: "drift", text: "left the task" },
+  const shaped = JSON.stringify({ goal: "Ship", done: "—", now: "—", next: "—", blocked: "—", trace: {
+    task: "model trace, not the chat",
+    pivot: "",
+    drift: "",
+    steps: ["rail shows decisions, not chat", "Applied edits rewriting the trace"],
+  }});
+  assert.deepEqual(parsePresented(shaped), [
+    { who: "user", kind: "task", text: "model trace, not the chat" },
+    { who: "agent", kind: "turn", text: "rail shows decisions, not chat" },
+  ]);
+  const legacy = JSON.stringify({ trace: [
+    { who: "user", kind: "turn", text: "Kicked off a standup skill session." },
+    { who: "agent", kind: "task", text: "Tree stays the source" },
+    { who: "agent", kind: "turn", text: "Applied edits rewriting the trace" },
   ]});
-  assert.deepEqual(parsePresented(text), [
-    { who: "user", kind: "task", text: "keep the brief useful" },
-    { who: "agent", kind: "drift", text: "left the task" },
+  assert.deepEqual(parsePresented(legacy), [
+    { who: "agent", kind: "turn", text: "Tree stays the source" },
   ]);
   assert.deepEqual(parsePresented('{"goal":"Ship"}'), []);
 });

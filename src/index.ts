@@ -46,9 +46,11 @@ function modelFailure(reply: { stopReason: string; errorMessage?: string }): str
   return detail ? `model stopped: ${reply.stopReason}: ${detail}` : `model stopped: ${reply.stopReason}`;
 }
 
-function outlineFor(ctx: ExtensionContext): string {
+function outlineFor(ctx: ExtensionContext, lock = ""): string {
   const manager = ctx.sessionManager as { getBranch: () => unknown[]; getTree?: () => unknown[] };
-  return sessionOutline(manager.getBranch(), manager.getTree?.() ?? []);
+  const tree = sessionOutline(manager.getBranch(), manager.getTree?.() ?? []);
+  if (!tree) return "";
+  return lock ? `Locked task: ${lock}\n${tree}` : tree;
 }
 
 function savedPresented(ctx: ExtensionContext): Presented[] {
@@ -202,7 +204,7 @@ export default function piBrief(pi: ExtensionAPI) {
     }, restored, config.maxCalls, config.maxCostUsd, savedPresented(ctx));
     controller = current;
     refresh(ctx);
-    const outline = outlineFor(ctx);
+    const outline = outlineFor(ctx, memory.locked);
     if (restored && !outline) current.noteOutline("");
     else if (outline) current.revise(outline);
   }
@@ -243,7 +245,7 @@ export default function piBrief(pi: ExtensionAPI) {
     inFlight = "";
     activity = controller.stats.error ? "update failed" : controller.stats.limit ? "limit reached" : "";
     refresh(ctx);
-    controller.revise(outlineFor(ctx));
+    controller.revise(outlineFor(ctx, memory.locked));
   });
   pi.registerCommand("brief", {
     description: "Show the session brief; /brief status shows model, calls, cost and errors; /brief refresh retries pending activity",
@@ -256,7 +258,7 @@ export default function piBrief(pi: ExtensionAPI) {
         ctx.ui.notify(`Brief off. Set PI_BRIEF_MODEL=provider/model or configure ${configPath}.`, "info"); return;
       }
       if (action === "refresh") {
-        controller.revise(outlineFor(ctx), true);
+        controller.revise(outlineFor(ctx, memory.locked), true);
         while (controller.stats.running) await new Promise((resolve) => setImmediate(resolve));
       }
       const s = controller.stats;
