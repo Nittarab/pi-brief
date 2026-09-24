@@ -24,7 +24,7 @@ function harness(mode = "tui", initial: unknown[] = []) {
   let branch = initial;
   let calls = 0;
   let complete = async (_model: unknown, _context: unknown, _options: unknown): Promise<typeof response> => response;
-  let command!: (args: string, ctx: ExtensionContext) => Promise<void>;
+  const commands = new Map<string, (args: string) => Promise<void>>();
   const ctx = {
     mode,
     ui: { setStatus: (key: string, text: string | undefined) => statuses.push([key, text]),
@@ -36,10 +36,16 @@ function harness(mode = "tui", initial: unknown[] = []) {
   } as unknown as ExtensionContext;
   extension({ on: (name: string, handler: Handler) => { handlers.set(name, handler); return () => {}; },
     appendEntry: (_key: string, data: unknown) => entries.push(data),
-    registerCommand: (_name: string, options: { handler: typeof command }) => { command = options.handler; },
+    registerCommand: (name: string, options: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) => {
+      commands.set(name, (args: string) => options.handler(args, ctx));
+    },
   } as unknown as ExtensionAPI);
   const emit = (name: string, event: unknown = {}) => handlers.get(name)?.(event, ctx);
-  return { ctx, emit, statuses, widgets, notifications, entries, command: (args: string) => command(args, ctx),
+  return { ctx, emit, statuses, widgets, notifications, entries, command: (args: string, name = "brief") => {
+    const run = commands.get(name);
+    if (!run) throw new Error(`missing command ${name}`);
+    return run(args);
+  },
     get calls() { return calls; }, setComplete: (fn: typeof complete) => { complete = fn; }, setBranch: (next: unknown[]) => { branch = next; } };
 }
 
@@ -64,7 +70,7 @@ test("brief stays above the editor through work and idle; only metadata and visi
   h.emit("tool_execution_end", { toolName: "bash", isError: false, result: "SENSITIVE_OUTPUT" });
   h.emit("message_end", { message: { role: "assistant", content: [{ type: "thinking", thinking: "SENSITIVE_THOUGHT" }, { type: "text", text: "Checked" }] } });
   assert.equal(h.calls, 0, "tool events and the prompt do not start paid calls");
-  assert.match(shown(h.widgets), /Goal: — · Now: —/);
+  assert.match(shown(h.widgets), /Goal: ship it/);
   assert.equal(h.statuses.at(-1)?.[1], undefined);
   h.setBranch([
     { id: "u1", type: "message", message: { role: "user", content: [{ type: "text", text: "ship it" }] } },
@@ -77,7 +83,7 @@ test("brief stays above the editor through work and idle; only metadata and visi
   assert.doesNotMatch(prompt, /SENSITIVE_ARGUMENT|SENSITIVE_OUTPUT|SENSITIVE_THOUGHT/);
   assert.match(prompt, /Checked/);
   assert.match(prompt, /Keep goal unchanged/);
-  assert.match(shown(h.widgets), /Goal: Ship · Now: Review/);
+  assert.match(shown(h.widgets), /Goal: ship it · Now: Review/);
   assert.equal(h.statuses.at(-1)?.[1], undefined);
   assert.deepEqual(h.entries, [{ brief }]);
   await h.command("status");
@@ -132,7 +138,7 @@ test("startup summarizes recent visible text and shows the same line above the e
   assert.match(prompt, /Ship the footer/);
   assert.match(prompt, /Footer is visible/);
   assert.doesNotMatch(prompt, /SECRET_THOUGHT|SECRET_TOOL/);
-  assert.match(shown(h.widgets), /Goal: Ship · Now: Review/);
+  assert.match(shown(h.widgets), /Goal: Ship the footer · Now: Review/);
   assert.equal(h.statuses.at(-1)?.[1], undefined);
   h.emit("session_shutdown");
   assert.deepEqual(h.widgets.at(-1), ["pi-brief", undefined]);
@@ -190,11 +196,12 @@ test("restores active branch, discards in-flight replies from abandoned branches
   let resolve!: (value: typeof response) => void;
   h.setComplete(async () => new Promise((r) => { resolve = r; }));
   h.emit("session_start");
-  assert.match(shown(h.widgets), /Goal: Ship/);
+  assert.match(shown(h.widgets), /Goal: old branch/);
   assert.equal(h.calls, 1);
   h.setBranch([]);
   h.emit("session_tree");
-  assert.match(shown(h.widgets), /Goal: —/);
+  assert.match(shown(h.widgets), /Goal: old branch/);
+  assert.match(shown(h.widgets), /left path/);
   assert.equal(h.statuses.at(-1)?.[1], undefined);
   resolve(response);
   await new Promise<void>((resolve) => setImmediate(resolve));

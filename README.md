@@ -26,12 +26,13 @@ Or create `~/.pi/agent/brief.json`:
 
 ## Use
 
-- One line above the editor shows `Goal: … · Now: …`. The footer does not repeat it. The line uses the terminal width and cuts a field only when the row is too narrow. Goal is the user task on the active branch. Now is the unfinished objective on that path, not a narration of the latest message or tool. The line does not change on every tool call. It changes only when a summary of the session tree and active agent trace changes the brief. It also reports when disabled, an update failed, or a limit was reached.
+- One line above the editor shows the locked user goal and Now. The footer does not repeat it. The line uses the terminal width and cuts a field only when the row is too narrow. The first user task locks the goal. A later user message moves that lock only when it is an explicit new task (`instead`, `new task`, `forget that`, and the same kind of phrase). The model cannot move the lock. If the model goal or Now leaves the lock, the line shows `!` and the old goal stays. It also reports when disabled, an update failed, or a limit was reached.
+- `/trace` shows or hides a right-side rail when the terminal is at least 100 columns wide. The rail covers the chat. It does not shrink it. The rail shows the locked goal, drift, a possible new ask, a branch switch, and the recent trace. Tool events update the rail locally. They do not start a summary.
 - `/brief` displays Goal, Done, Now, Next, and Blocked. The summary reads the `/tree` shape and the active agent trace: user prompts, visible assistant text, and tool names. It does not read tool arguments, tool output, or thinking. Goal stays the same unless the active branch shows that the user changed the task. Other branches are alternatives, not the current task. The model is instructed to mark Done only for verified progress; the brief can still be inaccurate. Check important facts yourself.
 - `/brief status` displays selected model, request count, reported USD cost, pending activity, limit state, and last error.
 - `/brief refresh` processes pending activity (or retries a failed update) subject to the same limits. It does not spend on an empty queue.
 
-The brief is one widget line above the editor. It does not set a footer status, because that row is shared and Pi can clip it. The widget fits Goal and Now to the current terminal width. In print/JSON/RPC modes the extension performs no summarization or widget updates.
+The brief is one widget line above the editor, plus an optional right rail. It does not set a footer status, because that row is shared and Pi can clip it. The widget fits the locked goal and Now to the current terminal width. In print/JSON/RPC modes the extension performs no summarization, widget, or rail updates.
 
 ## Privacy, security, and cost
 

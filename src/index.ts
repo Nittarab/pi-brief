@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { BriefController, briefLine, cleanText, display, isBrief, sessionOutline, type Brief } from "./brief.ts";
+import { assess, emptyMemory, emptyRail, renderRail, stepsFrom, usersFrom, type Rail, type TraceMemory } from "./trace.ts";
 
 const key = "pi-brief";
 // Older builds wrote this footer key. Clear it so the line is not shown twice.
@@ -65,24 +66,80 @@ function savedBrief(ctx: ExtensionContext): Brief | undefined {
   return undefined;
 }
 
+const railWidth = 34;
+const railMinColumns = 100;
+
 export default function piBrief(pi: ExtensionAPI) {
   let controller: BriefController | undefined;
   let modelName: string | undefined;
   let activity = "";
+  let memory: TraceMemory = emptyMemory();
+  let rail: Rail = emptyRail();
+  let pendingUser = "";
+  let inFlight = "";
+  let railWanted = true;
+  let railOpen = false;
+  let closeRail: (() => void) | undefined;
+  let hideRail: ((hidden: boolean) => void) | undefined;
+  let paintRail: (() => void) | undefined;
+
+  function shownBrief(): Brief {
+    const model = controller?.brief ?? { goal: "—", done: "—", now: "—", next: "—", blocked: "—" };
+    const goal = memory.locked || model.goal;
+    const now = rail.drift ? `! ${rail.drift}` : rail.left ? "! left path" : model.now;
+    return { ...model, goal, now };
+  }
 
   function show(ctx: ExtensionContext) {
     if (ctx.mode !== "tui") return;
     const state = activity === "update failed" || activity === "limit reached" || activity.startsWith("off:") || activity.startsWith("config error")
       ? activity : "";
+    const warn = Boolean(rail.drift || rail.left);
     // One line only, fitted to the row. The footer shares a truncated row.
     ctx.ui.setStatus(footerKey, undefined);
     ctx.ui.setWidget(widgetKey, (_tui, theme: Theme) => ({
       invalidate() {},
       render(width: number) {
-        const text = briefLine(controller?.brief, state, width);
-        return [theme.fg("accent", text)];
+        const text = briefLine(shownBrief(), state, width);
+        return [theme.fg(warn && !state ? "warning" : "accent", text)];
       },
     }));
+    paintRail?.();
+  }
+
+  function refresh(ctx: ExtensionContext) {
+    const branch = ctx.sessionManager.getBranch();
+    const users = usersFrom(branch);
+    if (pendingUser && users.at(-1)?.text !== pendingUser) users.push({ text: pendingUser });
+    const next = assess(memory, {
+      users, steps: stepsFrom(branch), modelGoal: controller?.brief.goal, modelNow: controller?.brief.now, inFlight,
+    });
+    memory = next.memory;
+    rail = next.rail;
+    show(ctx);
+  }
+
+  function openRail(ctx: ExtensionContext) {
+    if (ctx.mode !== "tui" || railOpen || typeof ctx.ui.custom !== "function") return;
+    railOpen = true;
+    void ctx.ui.custom((tui, theme, _keys, done) => {
+      closeRail = () => { closeRail = undefined; hideRail = undefined; paintRail = undefined; railOpen = false; done(undefined); };
+      paintRail = () => tui.requestRender();
+      return {
+        invalidate() {},
+        render(width: number) {
+          const lines = renderRail(rail, width, Math.max(8, tui.terminal.rows));
+          return lines.map((line) => theme.fg(line.includes("! ") || line.includes("? ") ? "warning" : "dim", line));
+        },
+      };
+    }, {
+      overlay: true,
+      overlayOptions: {
+        anchor: "right-center", width: railWidth, maxHeight: "100%", margin: 0, nonCapturing: true,
+        visible: (columns) => railWanted && columns >= railMinColumns,
+      },
+      onHandle: (handle) => { hideRail = (hidden) => handle.setHidden(hidden); },
+    }).catch(() => { railOpen = false; closeRail = undefined; });
   }
 
   function start(ctx: ExtensionContext) {
@@ -131,28 +188,51 @@ export default function piBrief(pi: ExtensionAPI) {
       if (activity !== "working" && !activity.startsWith("using ")) {
         activity = current.stats.error ? "update failed" : current.stats.limit ? "limit reached" : "";
       }
-      show(ctx);
+      refresh(ctx);
     }, restored, config.maxCalls, config.maxCostUsd);
     controller = current;
-    show(ctx);
+    refresh(ctx);
     const outline = outlineFor(ctx);
     if (restored && !outline) current.noteOutline("");
     else if (outline) current.revise(outline);
   }
 
-  pi.on("session_start", (_event, ctx) => start(ctx));
+  pi.on("session_start", (_event, ctx) => {
+    memory = emptyMemory();
+    rail = emptyRail();
+    pendingUser = "";
+    inFlight = "";
+    closeRail?.();
+    start(ctx);
+    openRail(ctx);
+  });
   pi.on("session_tree", (_event, ctx) => start(ctx));
   pi.on("session_shutdown", (_event, ctx) => {
     controller?.close(); controller = undefined;
+    closeRail?.();
     if (ctx.mode === "tui") {
       ctx.ui.setStatus(footerKey, undefined);
       if ("setWidget" in ctx.ui) ctx.ui.setWidget(widgetKey, undefined);
     }
   });
+  pi.on("before_agent_start", (event, ctx) => {
+    pendingUser = cleanText(event.prompt, 140);
+    if (ctx.mode === "tui") refresh(ctx);
+  });
+  pi.on("tool_execution_start", (event, ctx) => {
+    inFlight = cleanText(event.toolName, 24);
+    if (ctx.mode === "tui") refresh(ctx);
+  });
+  pi.on("tool_execution_end", (_event, ctx) => {
+    inFlight = "";
+    if (ctx.mode === "tui") refresh(ctx);
+  });
   pi.on("agent_settled", (_event, ctx) => {
     if (!controller) return;
+    pendingUser = "";
+    inFlight = "";
     activity = controller.stats.error ? "update failed" : controller.stats.limit ? "limit reached" : "";
-    show(ctx);
+    refresh(ctx);
     controller.revise(outlineFor(ctx));
   });
   pi.registerCommand("brief", {
@@ -173,6 +253,20 @@ export default function piBrief(pi: ExtensionAPI) {
       ctx.ui.notify(action === "status"
         ? `${modelName} · ${s.calls} calls · $${s.cost.toFixed(5)} · ${s.pending} pending${s.limit ? " · limit reached" : ""}${s.error ? ` · last error: ${s.error}` : ""}`
         : display(controller.brief).join("\n"), "info");
+    },
+  });
+  pi.registerCommand("trace", {
+    description: "Show or hide the right-side trace rail",
+    handler: async (args, ctx) => {
+      const action = args.trim();
+      if (action && action !== "on" && action !== "off") {
+        ctx.ui.notify("Use /trace, /trace on, or /trace off", "warning"); return;
+      }
+      railWanted = action === "off" ? false : action === "on" ? true : !railWanted;
+      if (railWanted) openRail(ctx);
+      hideRail?.(!railWanted);
+      paintRail?.();
+      ctx.ui.notify(railWanted ? "Trace rail on" : "Trace rail off", "info");
     },
   });
 }
