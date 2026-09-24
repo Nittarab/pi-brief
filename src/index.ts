@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { BriefController, briefLine, cleanText, display, isBrief, sessionOutline, type Brief } from "./brief.ts";
-import { assess, emptyMemory, emptyRail, renderRail, stepsFrom, usersFrom, type Rail, type TraceMemory } from "./trace.ts";
+import { assess, emptyMemory, emptyRail, phrase, railColor, renderRail, stepsFrom, usersFrom, type Rail, type TraceMemory } from "./trace.ts";
 
 const key = "pi-brief";
 // Older builds wrote this footer key. Clear it so the line is not shown twice.
@@ -85,8 +85,8 @@ export default function piBrief(pi: ExtensionAPI) {
 
   function shownBrief(): Brief {
     const model = controller?.brief ?? { goal: "—", done: "—", now: "—", next: "—", blocked: "—" };
-    const goal = memory.locked || model.goal;
-    const now = rail.drift ? `! ${rail.drift}` : rail.left ? "! left path" : model.now;
+    const goal = phrase(memory.locked || model.goal);
+    const now = rail.drift ? `! ${phrase(rail.drift)}` : rail.left ? "! left path" : phrase(model.now);
     return { ...model, goal, now };
   }
 
@@ -129,7 +129,7 @@ export default function piBrief(pi: ExtensionAPI) {
         invalidate() {},
         render(width: number) {
           const lines = renderRail(rail, width, Math.max(8, tui.terminal.rows));
-          return lines.map((line) => theme.fg(/^[!?↩]/.test(line) ? "warning" : "dim", line));
+          return lines.map((line) => theme.fg(railColor(line), line));
         },
       };
     }, {

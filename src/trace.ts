@@ -101,7 +101,7 @@ export function assess(memory: TraceMemory, input: {
   const suspect = onLockBranch && isSuspect(locked, latest) ? latest : "";
   const left = lockBranch && key !== lockBranch ? (users[0]?.text ?? "—") : "";
   const steps = input.steps.filter((step) => step.role !== "tool" && cleanText(step.text, 80)).map((step) => ({
-    flag: step.role === "assistant" ? "◇" as const : isPivot(step.text) ? "!" as const : isSuspect(locked, step.text) ? "?" as const : "●" as const,
+    flag: step.role === "assistant" ? "◇" as const : isPivot(step.text) ? "!" as const : "●" as const,
     text: cleanText(step.text, 80),
   }));
   return {
@@ -151,10 +151,41 @@ export function stepsFrom(branch: unknown[]): TraceStep[] {
   return steps;
 }
 
+export function phrase(text: string): string {
+  let value = cleanText(text, 240);
+  const skill = value.match(/<skill\s+name="([^"]+)"/i)?.[1];
+  if (skill) value = skill.replace(/^cto-os-/, "").replace(/-/g, " ");
+  else {
+    value = value.replace(/<[^>]+>/g, " ");
+    const path = value.match(/(?:^|\s)(\/(?:Users|home|tmp)\/\S+)/);
+    if (path && value.trim().split(/\s+/).length <= 3) {
+      const base = path[1]?.split("/").pop() ?? "";
+      value = /cleanshot|\.png$|screenshot/i.test(base) ? "screenshot" : base;
+    }
+    value = value.replace(/^(?:ok[,;:]?\s+)+/i, "");
+    value = value.replace(/^(?:can you\s+(?:try to\s+)?|please\s+)/i, "");
+    value = value.replace(/^(?:i will\s+|i'll\s+|i cannot\s+|i can't\s+)/i, "");
+    value = value.replace(/^(?:the|a)\s+/i, "");
+  }
+  return cleanText(value, 80) || "—";
+}
+
+export function railColor(line: string): "accent" | "thinkingText" | "error" | "warning" | "dim" {
+  const icon = line.trimStart()[0];
+  if (icon === "!" || icon === "↩") return "error";
+  if (icon === "?") return "warning";
+  if (icon === "●") return "accent";
+  if (icon === "◇") return "thinkingText";
+  return "dim";
+}
+
 function clipLine(text: string, width: number): string {
   if (text.length <= width) return text;
   if (width <= 1) return "…";
-  return `${text.slice(0, width - 1).trimEnd()}…`;
+  const raw = text.slice(0, width - 1);
+  const space = raw.lastIndexOf(" ");
+  const base = space >= Math.ceil((width - 1) / 2) ? raw.slice(0, space) : raw.trimEnd();
+  return `${base || raw}…`;
 }
 
 function mark(icon: string, text: string, width: number): string {
@@ -165,14 +196,19 @@ function mark(icon: string, text: string, width: number): string {
 export function renderRail(rail: Rail, width: number, height: number): string[] {
   const columns = Math.max(4, Math.floor(width));
   const rows = Math.max(1, Math.floor(height));
-  const header = [mark("●", rail.locked || "—", columns)];
-  if (rail.drift) header.push(mark("!", rail.drift, columns));
-  if (rail.suspect) header.push(mark("?", rail.suspect, columns));
-  if (rail.left) header.push(mark("↩", rail.left, columns));
+  const lock = phrase(rail.locked);
+  const ask = phrase(rail.suspect);
+  const header = [mark("●", lock || "—", columns)];
+  if (rail.drift) header.push(mark("!", phrase(rail.drift), columns));
+  if (rail.suspect) header.push(mark("?", ask, columns));
+  if (rail.left) header.push(mark("↩", phrase(rail.left), columns));
   const room = Math.max(0, rows - header.length);
   const spine = rail.steps
-    .filter((step) => step.text !== rail.locked)
-    .map((step) => mark(step.flag, step.text, columns));
+    .filter((step) => {
+      const text = phrase(step.text);
+      return text !== lock && text !== ask;
+    })
+    .map((step) => mark(step.flag, phrase(step.text), columns));
   const visible = spine.length > room ? [mark("…", "", columns), ...spine.slice(-(Math.max(0, room - 1)))] : spine;
   const lines = [...header, ...visible];
   while (lines.length < rows) lines.push("");

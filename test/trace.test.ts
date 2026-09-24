@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assess, emptyMemory, isPivot, isSuspect, renderRail, sameTask, type TraceMemory, type TraceStep, type TraceUser } from "../src/trace.ts";
+import { assess, emptyMemory, isPivot, isSuspect, phrase, railColor, renderRail, sameTask, type TraceMemory, type TraceStep, type TraceUser } from "../src/trace.ts";
 
 function run(users: TraceUser[], steps: TraceStep[] = [], modelGoal = "", modelNow = "", memory: TraceMemory = emptyMemory()) {
   return assess(memory, { users, steps, modelGoal, modelNow });
@@ -20,7 +20,7 @@ test("simulated stable session keeps the lock and ignores short follow-ups", () 
   assert.equal(isPivot("ok do it"), false);
   const rail = renderRail(first.rail, 34, 16).join("\n");
   assert.match(rail, /● Fix the brief line/);
-  assert.match(rail, /◇ I will fit the row/);
+  assert.match(rail, /◇ fit the row/);
   assert.doesNotMatch(rail, /bash|tool|user |assistant /);
   for (const line of rail.split("\n")) assert.ok(line.length <= 34, line);
 });
@@ -79,6 +79,17 @@ test("simulated branch switch keeps the old goal visible", () => {
   const back = run([{ id: "u1", text: "Fix the brief line" }], [], "Fix the brief line", "Fit the row", left.memory);
   assert.equal(back.rail.left, "");
   assert.equal(back.memory.locked, "Fix the brief line");
+});
+
+test("wording drops skill tags, paths, and process openers", () => {
+  assert.equal(phrase('<skill name="cto-os-daily-standup">run</skill>'), "daily standup");
+  assert.equal(phrase("/Users/nittarab/Library/Caches/Clop/images/CleanShot 2026.png"), "screenshot");
+  assert.equal(phrase("I will look at the screenshot"), "look at the screenshot");
+  assert.equal(phrase("ok; can you try to be proactive here"), "be proactive here");
+  assert.equal(railColor("● Fix the brief line"), "accent");
+  assert.equal(railColor("◇ fit the row"), "thinkingText");
+  assert.equal(railColor("? add a right rail"), "warning");
+  assert.equal(railColor("! Publish the npm package"), "error");
 });
 
 test("rail fills the requested height and never exceeds the width", () => {
