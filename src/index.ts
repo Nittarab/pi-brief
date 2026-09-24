@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { BriefController, cleanText, display, footerStatus, isBrief, sessionOutline, type Brief } from "./brief.ts";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { BriefController, briefLine, cleanText, display, isBrief, sessionOutline, type Brief } from "./brief.ts";
 
 const key = "pi-brief";
 // Older builds wrote this footer key. Clear it so the line is not shown twice.
@@ -74,12 +74,15 @@ export default function piBrief(pi: ExtensionAPI) {
     if (ctx.mode !== "tui") return;
     const state = activity === "update failed" || activity === "limit reached" || activity.startsWith("off:") || activity.startsWith("config error")
       ? activity : "";
-    const text = footerStatus(controller?.brief, state);
-    const theme = (ctx.ui as { theme?: { fg?: (color: string, value: string) => string } }).theme;
-    const shown = theme?.fg ? theme.fg("accent", text) : text;
-    // One line only, above the editor. The footer shares a truncated row.
+    // One line only, fitted to the row. The footer shares a truncated row.
     ctx.ui.setStatus(footerKey, undefined);
-    ctx.ui.setWidget(widgetKey, [shown]);
+    ctx.ui.setWidget(widgetKey, (_tui, theme: Theme) => ({
+      invalidate() {},
+      render(width: number) {
+        const text = briefLine(controller?.brief, state, width);
+        return [theme.fg("accent", text)];
+      },
+    }));
   }
 
   function start(ctx: ExtensionContext) {

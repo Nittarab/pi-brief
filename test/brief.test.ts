@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BriefController, cleanText, footerStatus, isBrief, parseBrief, promptFor, sessionOutline, type Brief } from "../src/brief.ts";
+import { BriefController, briefLine, cleanText, isBrief, parseBrief, promptFor, sessionOutline, type Brief } from "../src/brief.ts";
 
 const summary: Brief = { goal: "Ship brief", done: "Tests passed", now: "Documenting", next: "Publish", blocked: "—" };
 const json = JSON.stringify(summary);
@@ -12,11 +12,21 @@ test("parsing requires all string fields, sanitizes control characters and persi
   assert.equal(cleanText("hello\x1b[31m\r\nworld"), "hello [31m world");
 });
 
-test("footer names Goal and Now and does not follow the latest tool", () => {
-  assert.equal(footerStatus(summary, ""), "Goal: Ship brief · Now: Documenting");
-  assert.equal(footerStatus(summary, "using bash"), "Brief · using bash");
-  assert.ok(footerStatus({ ...summary, goal: "g".repeat(140), now: "n".repeat(140) }, "").length <= 64);
-  assert.equal(footerStatus(undefined, "off: configure model"), "Brief · off: configure model");
+test("brief line uses the row width and keeps both labels", () => {
+  assert.equal(briefLine(summary, "", 80), "Goal: Ship brief · Now: Documenting");
+  assert.equal(briefLine(summary, "using bash", 80), "Brief · using bash");
+  assert.equal(briefLine(undefined, "off: configure model", 80), "Brief · off: configure model");
+  const goal = "Fix pi-bref TUI so the brief bar shows only once";
+  const now = "Judge the screenshot";
+  const wide = briefLine({ ...summary, goal, now }, "", 120);
+  assert.equal(wide, `Goal: ${goal} · Now: ${now}`);
+  assert.ok(goal.length > 22);
+  const narrow = briefLine({ ...summary, goal, now }, "", 36);
+  assert.ok(narrow.length <= 36);
+  assert.match(narrow, /^Goal: /);
+  assert.match(narrow, / · Now: /);
+  assert.doesNotMatch(narrow, /so the ·/); // the old 22-character cut
+  assert.equal(briefLine(summary, "update failed", 12).length <= 12, true);
 });
 
 test("outline keeps the active trace and other branches, without tool arguments or output", () => {
@@ -41,7 +51,8 @@ test("prompt includes bounded visible activities only and treats input as untrus
   assert.match(prompt, /untrusted data/);
   const outlinePrompt = promptFor(summary, [{ type: "user", text: "Active agent trace" }], true);
   assert.match(outlinePrompt, /Keep goal unchanged/);
-  assert.match(outlinePrompt, /not the latest tool/);
+  assert.match(outlinePrompt, /unfinished objective/);
+  assert.match(outlinePrompt, /not a narration of the latest message or tool/);
   assert.doesNotMatch(prompt, /tool output/);
 });
 

@@ -18,7 +18,7 @@ type Handler = (event: any, ctx: ExtensionContext) => void;
 function harness(mode = "tui", initial: unknown[] = []) {
   const handlers = new Map<string, Handler>();
   const statuses: Array<[string, string | undefined]> = [];
-  const widgets: Array<[string, string[] | undefined]> = [];
+  const widgets: Array<[string, Widget]> = [];
   const notifications: string[] = [];
   const entries: unknown[] = [];
   let branch = initial;
@@ -28,7 +28,7 @@ function harness(mode = "tui", initial: unknown[] = []) {
   const ctx = {
     mode,
     ui: { setStatus: (key: string, text: string | undefined) => statuses.push([key, text]),
-      setWidget: (key: string, content: string[] | undefined) => widgets.push([key, content]),
+      setWidget: (key: string, content: Widget) => widgets.push([key, content]),
       notify: (text: string) => notifications.push(text) },
     modelRegistry: { find: (provider: string, model: string) => provider === "test" && model === "brief" ? { id: model } : undefined,
       complete: (...args: [unknown, unknown, unknown]) => { calls++; return complete(...args); } },
@@ -43,9 +43,13 @@ function harness(mode = "tui", initial: unknown[] = []) {
     get calls() { return calls; }, setComplete: (fn: typeof complete) => { complete = fn; }, setBranch: (next: unknown[]) => { branch = next; } };
 }
 
-function shown(widgets: Array<[string, string[] | undefined]>): string {
-  const line = widgets.at(-1)?.[1]?.[0];
-  return typeof line === "string" ? line : "";
+type Widget = string[] | ((tui: unknown, theme: { fg: (color: string, value: string) => string }) => { render: (width: number) => string[] }) | undefined;
+
+function shown(widgets: Array<[string, Widget]>, width = 160): string {
+  const content = widgets.at(-1)?.[1];
+  if (Array.isArray(content)) return content[0] ?? "";
+  if (typeof content === "function") return content({}, { fg: (_color, value) => value }).render(width)[0] ?? "";
+  return "";
 }
 
 test("brief stays above the editor through work and idle; only metadata and visible text reach summarizer", async () => {
@@ -83,6 +87,18 @@ test("brief stays above the editor through work and idle; only metadata and visi
   h.emit("session_shutdown");
   assert.deepEqual(h.statuses.at(-1), [" pi-brief", undefined]);
   assert.deepEqual(h.widgets.at(-1), ["pi-brief", undefined]);
+});
+
+test("widget shows the full task when the row is wide", () => {
+  const goal = "Fix pi-bref TUI so the brief bar shows only once";
+  const h = harness("tui", [
+    { type: "custom", customType: "pi-brief", data: { brief: { ...brief, goal, now: "Judge the screenshot" } } },
+  ]);
+  h.emit("session_start");
+  assert.match(shown(h.widgets, 140), /brief bar shows only once/);
+  assert.ok(shown(h.widgets, 36).length <= 36);
+  assert.equal(h.statuses.at(-1)?.[1], undefined);
+  h.emit("session_shutdown");
 });
 
 test("tool activity does not replace the stable Goal and Now line", async () => {

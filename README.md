@@ -26,12 +26,12 @@ Or create `~/.pi/agent/brief.json`:
 
 ## Use
 
-- One line above the editor shows `Goal: … · Now: …`. The footer does not repeat it. Goal is the user task on the active branch. Now is the current objective on that path, not the latest tool. The line does not change on every tool call. It changes only when a summary of the session tree and active agent trace changes the brief. It also reports when disabled, an update failed, or a limit was reached.
+- One line above the editor shows `Goal: … · Now: …`. The footer does not repeat it. The line uses the terminal width and cuts a field only when the row is too narrow. Goal is the user task on the active branch. Now is the unfinished objective on that path, not a narration of the latest message or tool. The line does not change on every tool call. It changes only when a summary of the session tree and active agent trace changes the brief. It also reports when disabled, an update failed, or a limit was reached.
 - `/brief` displays Goal, Done, Now, Next, and Blocked. The summary reads the `/tree` shape and the active agent trace: user prompts, visible assistant text, and tool names. It does not read tool arguments, tool output, or thinking. Goal stays the same unless the active branch shows that the user changed the task. Other branches are alternatives, not the current task. The model is instructed to mark Done only for verified progress; the brief can still be inaccurate. Check important facts yourself.
 - `/brief status` displays selected model, request count, reported USD cost, pending activity, limit state, and last error.
 - `/brief refresh` processes pending activity (or retries a failed update) subject to the same limits. It does not spend on an empty queue.
 
-The brief is one widget line above the editor. It does not set a footer status, because that row is shared and Pi can clip it. Goal + Now stays compact (normally under 65 columns). In print/JSON/RPC modes the extension performs no summarization or widget updates.
+The brief is one widget line above the editor. It does not set a footer status, because that row is shared and Pi can clip it. The widget fits Goal and Now to the current terminal width. In print/JSON/RPC modes the extension performs no summarization or widget updates.
 
 ## Privacy, security, and cost
 
