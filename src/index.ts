@@ -3,11 +3,12 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { BriefController, cleanText, display, footerStatus, isBrief, type Brief } from "./brief.ts";
+import { BriefController, cleanText, display, footerStatus, isBrief, type Activity, type Brief } from "./brief.ts";
 
 const key = "pi-brief";
 // Footer statuses are sorted by key before Pi truncates the shared line.
 const footerKey = " pi-brief";
+const widgetKey = "pi-brief";
 const configPath = join(homedir(), ".pi", "agent", "brief.json");
 
 type Config = { model: string; maxCalls: number; maxCostUsd: number | null };
@@ -44,6 +45,27 @@ function modelFailure(reply: { stopReason: string; errorMessage?: string }): str
   return detail ? `model stopped: ${reply.stopReason}: ${detail}` : `model stopped: ${reply.stopReason}`;
 }
 
+function visibleText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.flatMap((part) => {
+    if (!part || typeof part !== "object") return [];
+    const item = part as { type?: string; text?: string };
+    return item.type === "text" && typeof item.text === "string" ? [item.text] : [];
+  }).join(" ");
+}
+
+function recentActivity(ctx: ExtensionContext): Activity[] {
+  const events: Activity[] = [];
+  for (const entry of ctx.sessionManager.getBranch() as Array<{ type?: string; message?: { role?: string; content?: unknown } }>) {
+    if (entry.type !== "message" || (entry.message?.role !== "user" && entry.message?.role !== "assistant")) continue;
+    const text = visibleText(entry.message.content);
+    if (!text.trim()) continue;
+    events.push({ type: entry.message.role, text });
+  }
+  return events.slice(-8);
+}
+
 function savedBrief(ctx: ExtensionContext): Brief | undefined {
   for (const entry of ctx.sessionManager.getBranch().reverse()) {
     if (entry.type === "custom" && entry.customType === key) {
@@ -65,7 +87,13 @@ export default function piBrief(pi: ExtensionAPI) {
   let activity = "";
 
   function show(ctx: ExtensionContext) {
-    if (ctx.mode === "tui") ctx.ui.setStatus(footerKey, footerStatus(controller?.brief, activity));
+    if (ctx.mode !== "tui") return;
+    const text = footerStatus(controller?.brief, activity);
+    const theme = (ctx.ui as { theme?: { fg?: (color: string, value: string) => string } }).theme;
+    const shown = theme?.fg ? theme.fg("accent", text) : text;
+    ctx.ui.setStatus(footerKey, shown);
+    // The native footer can be clipped. Keep the same line directly above the editor.
+    if ("setWidget" in ctx.ui) ctx.ui.setWidget(widgetKey, [shown]);
   }
 
   function start(ctx: ExtensionContext) {
@@ -95,6 +123,7 @@ export default function piBrief(pi: ExtensionAPI) {
     }
     modelName = config.model;
     activity = "ready";
+    const restored = savedBrief(ctx);
     const fallbackSessionId = randomUUID();
     const current = new BriefController(async (prompt, signal) => {
       const reply = await ctx.modelRegistry.complete(model, {
@@ -114,16 +143,23 @@ export default function piBrief(pi: ExtensionAPI) {
         activity = current.stats.error ? "update failed" : current.stats.limit ? "limit reached" : "";
       }
       show(ctx);
-    }, savedBrief(ctx), config.maxCalls, config.maxCostUsd);
+    }, restored, config.maxCalls, config.maxCostUsd);
     controller = current;
     show(ctx);
+    if (!restored) {
+      for (const event of recentActivity(ctx)) current.add(event);
+      current.trigger();
+    }
   }
 
   pi.on("session_start", (_event, ctx) => start(ctx));
   pi.on("session_tree", (_event, ctx) => start(ctx));
   pi.on("session_shutdown", (_event, ctx) => {
     controller?.close(); controller = undefined;
-    if (ctx.mode === "tui") ctx.ui.setStatus(footerKey, undefined);
+    if (ctx.mode === "tui") {
+      ctx.ui.setStatus(footerKey, undefined);
+      if ("setWidget" in ctx.ui) ctx.ui.setWidget(widgetKey, undefined);
+    }
   });
   pi.on("before_agent_start", (event, ctx) => {
     controller?.add({ type: "user", text: event.prompt }, true);

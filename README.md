@@ -26,12 +26,12 @@ Or create `~/.pi/agent/brief.json`:
 
 ## Use
 
-- The default Pi footer shows a short `Brief G: … · N: …` while the agent is working **and** when idle. During tool execution, Now displays the tool name; after settling it shows the last summarized Now. It also reports when disabled, updating failed, or a limit was reached. An initial user prompt starts a summary immediately; assistant text and bounded tool success/failure metadata are coalesced into an update when the run settles. Tool events alone do not start model requests.
+- The default Pi footer shows a short `Brief G: … · N: …` while the agent is working **and** when idle. The same line is also shown directly above the editor, because Pi can clip the footer. During tool execution, Now displays the tool name; after settling it shows the last summarized Now. It also reports when disabled, updating failed, or a limit was reached. An initial user prompt starts a summary immediately. If no brief is saved, session start summarizes the latest visible user and assistant text. Assistant text and bounded tool success/failure metadata are coalesced into an update when the run settles. Tool events alone do not start model requests.
 - `/brief` displays Goal, Done, Now, Next, Blocked. The model is instructed to mark Done only for verified progress; the brief can still be inaccurate. Check important facts yourself.
 - `/brief status` displays selected model, request count, reported USD cost, pending activity, limit state, and last error.
 - `/brief refresh` processes pending activity (or retries a failed update) subject to the same limits. It does not spend on an empty queue.
 
-Pi 0.87.1 renders extension statuses in **one native footer line sorted by key**, then truncates it to terminal width. The brief uses an early-sorting key and keeps Goal + Now compact (normally under 65 columns). This keeps it visible at normal 80/120-column widths with ordinary other statuses, but Pi can still clip it on a very narrow terminal or if another extension with an earlier key consumes the line. No widget or replacement footer is installed. In print/JSON/RPC modes the extension performs no summarization or footer updates.
+Pi 0.87.1 renders extension statuses in **one native footer line sorted by key**, then truncates it to terminal width. The brief uses an early-sorting key and keeps Goal + Now compact (normally under 65 columns). The same line is installed as a one-line widget above the editor so it remains visible when the footer is clipped. No replacement footer is installed. In print/JSON/RPC modes the extension performs no summarization, widget, or footer updates.
 
 ## Privacy, security, and cost
 

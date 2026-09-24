@@ -18,6 +18,7 @@ type Handler = (event: any, ctx: ExtensionContext) => void;
 function harness(mode = "tui", initial: unknown[] = []) {
   const handlers = new Map<string, Handler>();
   const statuses: Array<[string, string | undefined]> = [];
+  const widgets: Array<[string, string[] | undefined]> = [];
   const notifications: string[] = [];
   const entries: unknown[] = [];
   let branch = initial;
@@ -26,7 +27,9 @@ function harness(mode = "tui", initial: unknown[] = []) {
   let command!: (args: string, ctx: ExtensionContext) => Promise<void>;
   const ctx = {
     mode,
-    ui: { setStatus: (key: string, text: string | undefined) => statuses.push([key, text]), notify: (text: string) => notifications.push(text) },
+    ui: { setStatus: (key: string, text: string | undefined) => statuses.push([key, text]),
+      setWidget: (key: string, content: string[] | undefined) => widgets.push([key, content]),
+      notify: (text: string) => notifications.push(text) },
     modelRegistry: { find: (provider: string, model: string) => provider === "test" && model === "brief" ? { id: model } : undefined,
       complete: (...args: [unknown, unknown, unknown]) => { calls++; return complete(...args); } },
     sessionManager: { getBranch: () => [...branch] },
@@ -36,7 +39,7 @@ function harness(mode = "tui", initial: unknown[] = []) {
     registerCommand: (_name: string, options: { handler: typeof command }) => { command = options.handler; },
   } as unknown as ExtensionAPI);
   const emit = (name: string, event: unknown = {}) => handlers.get(name)?.(event, ctx);
-  return { ctx, emit, statuses, notifications, entries, command: (args: string) => command(args, ctx),
+  return { ctx, emit, statuses, widgets, notifications, entries, command: (args: string) => command(args, ctx),
     get calls() { return calls; }, setComplete: (fn: typeof complete) => { complete = fn; }, setBranch: (next: unknown[]) => { branch = next; } };
 }
 
@@ -90,6 +93,25 @@ test("a background summary finishing during work does not overwrite the live wor
   h.emit("agent_settled");
   assert.match(h.statuses.at(-1)?.[1] ?? "", /G: Ship · N: Review/);
   h.emit("session_shutdown");
+});
+
+test("startup summarizes recent visible text and shows the same line above the editor", async () => {
+  const h = harness("tui", [
+    { type: "message", message: { role: "user", content: [{ type: "text", text: "Ship the footer" }] } },
+    { type: "message", message: { role: "assistant", content: [{ type: "text", text: "Footer is visible" }, { type: "thinking", thinking: "SECRET_THOUGHT" }] } },
+    { type: "message", message: { role: "toolResult", content: [{ type: "text", text: "SECRET_TOOL" }] } },
+  ]);
+  let prompt = "";
+  h.setComplete(async (_model, context) => { prompt = JSON.stringify(context); return response; });
+  h.emit("session_start");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(h.calls, 1);
+  assert.match(prompt, /Ship the footer/);
+  assert.match(prompt, /Footer is visible/);
+  assert.doesNotMatch(prompt, /SECRET_THOUGHT|SECRET_TOOL/);
+  assert.deepEqual(h.widgets.at(-1)?.[1], [h.statuses.at(-1)?.[1]]);
+  h.emit("session_shutdown");
+  assert.deepEqual(h.widgets.at(-1), ["pi-brief", undefined]);
 });
 
 test("forwards the Pi session id on every summary request", async () => {
