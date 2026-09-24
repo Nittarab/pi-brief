@@ -28,10 +28,11 @@ export async function rollout(env: BriefEnv, policy: Policy): Promise<{ mean: nu
 export function oraclePolicy(observation: Observation, episode: Episode): unknown {
   const truth = observation.turns === 1 ? episode.turns.at(-1) : episode.turns[observation.turn];
   const must = truth?.must ?? [];
+  const pivoted = observation.turns === 1 ? episode.turns.some((turn) => turn.pivoted) : Boolean(truth?.pivoted);
   return {
     goal: must.length ? must.join(" ") : "—",
     done: "—", now: "—", next: "—", blocked: "—",
-    trace: { task: must[0] ?? "wait", pivot: truth?.pivoted ? "new job" : "", drift: "", steps: ["kept the job"] },
+    trace: { task: must[0] ?? "wait", pivot: pivoted ? "new job" : "", drift: "", steps: ["kept the job"] },
   };
 }
 

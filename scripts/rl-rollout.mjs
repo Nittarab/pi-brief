@@ -31,17 +31,35 @@ async function modelPolicy(observation) {
       model: "mimo-v2.6-flash",
       temperature: 0,
       max_tokens: 700,
+      chat_template_kwargs: { enable_thinking: false },
       messages: [
         { role: "system", content: "Summarize only the provided data. Output one JSON object, without markdown." },
         { role: "user", content: observation.prompt },
       ],
     }),
+    signal: AbortSignal.timeout(45_000),
   });
   const body = await response.json();
-  return body.choices?.[0]?.message?.content ?? "";
+  if (!body.choices?.[0]?.message?.content) throw new Error(body.error?.message ?? `model status ${response.status}`);
+  return body.choices[0].message.content;
 }
 
-const live = await rollout(new BriefEnv(), modelPolicy);
-console.log(`model  ${live.mean}`);
-for (const row of live.episodes) console.log(`  ${row.reward.toFixed(2)} ${row.name}: ${row.goal}`);
-process.exit(live.mean >= 0.7 ? 0 : 1);
+const scored = await Promise.all(new BriefEnv().episodes.map(async (_episode, index) => {
+  const env = new BriefEnv();
+  const observation = env.reset(index);
+  const started = Date.now();
+  try {
+    const action = await modelPolicy(observation);
+    const result = env.step(action);
+    return { name: observation.episode, reward: result.reward, goal: result.info.goal, parts: result.info.parts, raw: String(action).slice(0, 500), ms: Date.now() - started };
+  } catch (error) {
+    return { name: observation.episode, reward: 0, goal: "", parts: {}, ms: Date.now() - started, error: error instanceof Error ? error.message : String(error) };
+  }
+}));
+const mean = scored.reduce((sum, row) => sum + row.reward, 0) / scored.length;
+console.log(`model  ${mean.toFixed(3)}`);
+for (const row of scored) {
+  console.log(`  ${row.reward.toFixed(2)} ${row.name} ${row.ms}ms ${row.error ?? row.goal} ${JSON.stringify(row.parts)}`);
+  if (row.reward < 1) console.log(`    ${row.raw ?? ""}`);
+}
+process.exit(mean >= 1 ? 0 : 1);

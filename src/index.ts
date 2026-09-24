@@ -193,6 +193,7 @@ export default function piBrief(pi: ExtensionAPI) {
         messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
       }, {
         signal, timeoutMs: 30_000, maxRetries: 0, maxTokens: 700, cacheRetention: "none",
+        samplingParams: { chat_template_kwargs: { enable_thinking: false } },
         // OpenCode Go rejects requests that omit this routing id. Other providers ignore it.
         sessionId: routingSessionId(ctx, fallbackSessionId),
       });

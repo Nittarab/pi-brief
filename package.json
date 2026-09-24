@@ -1,6 +1,6 @@
 {
   "name": "pi-brief",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "description": "A live, cost-bounded session brief for Pi",
   "type": "module",
   "license": "MIT",
