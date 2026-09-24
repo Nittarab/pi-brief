@@ -48,7 +48,7 @@ test("native footer status remains set through work and idle; only metadata and 
   let prompt = "";
   h.setComplete(async (_model, context) => { prompt = JSON.stringify(context); return response; });
   h.emit("session_start");
-  assert.match(h.statuses.at(-1)?.[1] ?? "", /Brief G: — · N: ready/);
+  assert.match(h.statuses.at(-1)?.[1] ?? "", /Goal: — · Now: —/);
   for (const width of [80, 120]) {
     const status = h.statuses.at(-1)!;
     const other = ["another-extension", "other status"] as const;
@@ -56,42 +56,45 @@ test("native footer status remains set through work and idle; only metadata and 
     assert.ok(line.slice(0, width).includes(status[1]!), `brief visible at ${width} columns`);
   }
   h.emit("before_agent_start", { prompt: "ship it" });
-  assert.equal(h.calls, 1, "initial user prompt starts immediately");
   h.emit("tool_execution_start", { toolName: "bash", args: { password: "SENSITIVE_ARGUMENT" } });
-  assert.match(h.statuses.at(-1)?.[1] ?? "", /N: using bash/);
   h.emit("tool_execution_end", { toolName: "bash", isError: false, result: "SENSITIVE_OUTPUT" });
-  assert.equal(h.calls, 1, "tool events do not start paid calls");
   h.emit("message_end", { message: { role: "assistant", content: [{ type: "thinking", thinking: "SENSITIVE_THOUGHT" }, { type: "text", text: "Checked" }] } });
-  assert.equal(h.calls, 1, "intermediate assistant messages wait for settlement");
-  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(h.calls, 0, "tool events and the prompt do not start paid calls");
+  assert.match(h.statuses.at(-1)?.[1] ?? "", /Goal: — · Now: —/);
+  h.setBranch([
+    { id: "u1", type: "message", message: { role: "user", content: [{ type: "text", text: "ship it" }] } },
+    { id: "a1", type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "SENSITIVE_THOUGHT" }, { type: "text", text: "Checked" }, { type: "toolCall", name: "bash", arguments: { password: "SENSITIVE_ARGUMENT" } }] } },
+    { id: "t1", type: "message", message: { role: "toolResult", content: [{ type: "text", text: "SENSITIVE_OUTPUT" }] } },
+  ]);
   h.emit("agent_settled");
-  assert.equal(h.calls, 2);
   await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(h.calls, 1);
   assert.doesNotMatch(prompt, /SENSITIVE_ARGUMENT|SENSITIVE_OUTPUT|SENSITIVE_THOUGHT/);
   assert.match(prompt, /Checked/);
-  assert.match(h.statuses.at(-1)?.[1] ?? "", /Brief G: Ship · N: Review/);
+  assert.match(prompt, /Keep goal unchanged/);
+  assert.match(h.statuses.at(-1)?.[1] ?? "", /Goal: Ship · Now: Review/);
   assert.deepEqual(h.entries, [{ brief }]);
   await h.command("status");
-  assert.match(h.notifications.at(-1) ?? "", /test\/brief · 2 calls · \$0\.00200/);
+  assert.match(h.notifications.at(-1) ?? "", /test\/brief · 1 calls · \$0\.00100/);
   await h.command("");
   assert.match(h.notifications.at(-1) ?? "", /Goal: Ship[\s\S]*Blocked: —/);
   h.emit("session_shutdown");
   assert.deepEqual(h.statuses.at(-1), [" pi-brief", undefined]);
 });
 
-test("a background summary finishing during work does not overwrite the live working indicator", async () => {
-  const h = harness();
-  let resolve!: (value: typeof response) => void;
-  h.setComplete(async () => new Promise((r) => { resolve = r; }));
+test("tool activity does not replace the stable Goal and Now line", async () => {
+  const h = harness("tui", [
+    { id: "u1", type: "message", message: { role: "user", content: "Ship" } },
+    { type: "custom", customType: "pi-brief", data: { brief } },
+  ]);
   h.emit("session_start");
-  h.emit("before_agent_start", { prompt: "work" });
-  assert.equal(h.calls, 1);
-  h.emit("tool_execution_start", { toolName: "bash" });
-  resolve(response);
   await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.match(h.statuses.at(-1)?.[1] ?? "", /G: Ship · N: using bash/);
+  h.emit("tool_execution_start", { toolName: "bash" });
+  assert.match(h.statuses.at(-1)?.[1] ?? "", /Goal: Ship · Now: Review/);
+  assert.equal(h.calls, 1, "startup reads the current trace once");
   h.emit("agent_settled");
-  assert.match(h.statuses.at(-1)?.[1] ?? "", /G: Ship · N: Review/);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(h.calls, 1, "the same trace does not start another call");
   h.emit("session_shutdown");
 });
 
@@ -122,8 +125,8 @@ test("forwards the Pi session id on every summary request", async () => {
     sessionId = (options as { sessionId?: string }).sessionId ?? "";
     return response;
   });
+  h.setBranch([{ type: "message", message: { role: "user", content: "ship it" } }]);
   h.emit("session_start");
-  h.emit("before_agent_start", { prompt: "ship it" });
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(sessionId, "session-123");
   h.emit("session_shutdown");
@@ -132,8 +135,8 @@ test("forwards the Pi session id on every summary request", async () => {
 test("shows the provider error instead of only the stop reason", async () => {
   const h = harness();
   h.setComplete(async () => ({ ...response, stopReason: "error", errorMessage: "400 MissingSessionID" }));
+  h.setBranch([{ type: "message", message: { role: "user", content: "work" } }]);
   h.emit("session_start");
-  h.emit("before_agent_start", { prompt: "work" });
   await new Promise<void>((resolve) => setImmediate(resolve));
   await h.command("status");
   assert.match(h.notifications.at(-1) ?? "", /last error: model stopped: error: 400 MissingSessionID/);
@@ -144,13 +147,13 @@ test("failed summary stays visible in the native footer after agent settles", as
   const h = harness();
   let attempts = 0;
   h.setComplete(async () => { attempts++; return { ...response, stopReason: "error" }; });
+  h.setBranch([{ type: "message", message: { role: "user", content: "work" } }]);
   h.emit("session_start");
-  h.emit("before_agent_start", { prompt: "work" });
   await new Promise<void>((resolve) => setImmediate(resolve));
   h.emit("agent_settled");
-  assert.match(h.statuses.at(-1)?.[1] ?? "", /Brief G: — · N: update failed/);
+  assert.match(h.statuses.at(-1)?.[1] ?? "", /Brief · update failed/);
   h.emit("agent_settled");
-  assert.match(h.statuses.at(-1)?.[1] ?? "", /N: update failed/);
+  assert.match(h.statuses.at(-1)?.[1] ?? "", /update failed/);
   await h.command("status");
   assert.match(h.notifications.at(-1) ?? "", /last error: model stopped: error/);
   assert.equal(attempts, 1);
@@ -158,15 +161,18 @@ test("failed summary stays visible in the native footer after agent settles", as
 });
 
 test("restores active branch, discards in-flight replies from abandoned branches", async () => {
-  const h = harness("tui", [{ type: "custom", customType: "pi-brief", data: { brief } }]);
+  const h = harness("tui", [
+    { id: "u1", type: "message", message: { role: "user", content: "old branch" } },
+    { type: "custom", customType: "pi-brief", data: { brief } },
+  ]);
   let resolve!: (value: typeof response) => void;
   h.setComplete(async () => new Promise((r) => { resolve = r; }));
   h.emit("session_start");
-  assert.match(h.statuses.at(-1)?.[1] ?? "", /G: Ship/);
-  h.emit("before_agent_start", { prompt: "old branch" });
+  assert.match(h.statuses.at(-1)?.[1] ?? "", /Goal: Ship/);
+  assert.equal(h.calls, 1);
   h.setBranch([]);
   h.emit("session_tree");
-  assert.match(h.statuses.at(-1)?.[1] ?? "", /G: —/);
+  assert.match(h.statuses.at(-1)?.[1] ?? "", /Goal: —/);
   resolve(response);
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(h.entries.length, 0);
@@ -191,11 +197,11 @@ test("configuration accepts nullable USD limit and rejects invalid limits withou
   writeFileSync(join(directory, "brief.json"), JSON.stringify({ model: "test/brief", maxCostUsd: null, maxCalls: 2 }));
   const h = harness();
   h.emit("session_start");
-  h.emit("before_agent_start", { prompt: "first" });
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  h.emit("before_agent_start", { prompt: "second" });
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  h.emit("before_agent_start", { prompt: "third" });
+  for (const prompt of ["first", "second", "third"]) {
+    h.setBranch([{ type: "message", message: { role: "user", content: prompt } }]);
+    h.emit("agent_settled");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
   assert.equal(h.calls, 2);
   await h.command("status");
   assert.match(h.notifications.at(-1) ?? "", /\$0\.00200.*limit reached/);

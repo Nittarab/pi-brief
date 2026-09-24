@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BriefController, cleanText, footerStatus, isBrief, parseBrief, promptFor, type Brief } from "../src/brief.ts";
+import { BriefController, cleanText, footerStatus, isBrief, parseBrief, promptFor, sessionOutline, type Brief } from "../src/brief.ts";
 
 const summary: Brief = { goal: "Ship brief", done: "Tests passed", now: "Documenting", next: "Publish", blocked: "—" };
 const json = JSON.stringify(summary);
@@ -12,16 +12,36 @@ test("parsing requires all string fields, sanitizes control characters and persi
   assert.equal(cleanText("hello\x1b[31m\r\nworld"), "hello [31m world");
 });
 
-test("footer stays short and has goal and current action even when idle", () => {
-  assert.equal(footerStatus(summary, "using bash"), "Brief G: Ship brief · N: using bash");
-  assert.equal(footerStatus(summary, ""), "Brief G: Ship brief · N: Documenting");
+test("footer names Goal and Now and does not follow the latest tool", () => {
+  assert.equal(footerStatus(summary, ""), "Goal: Ship brief · Now: Documenting");
+  assert.equal(footerStatus(summary, "using bash"), "Brief · using bash");
   assert.ok(footerStatus({ ...summary, goal: "g".repeat(140), now: "n".repeat(140) }, "").length <= 64);
-  assert.equal(footerStatus(undefined, "off: configure model"), "Brief G: — · N: off: configure model");
+  assert.equal(footerStatus(undefined, "off: configure model"), "Brief · off: configure model");
+});
+
+test("outline keeps the active trace and other branches, without tool arguments or output", () => {
+  const outline = sessionOutline([
+    { id: "u1", type: "message", message: { role: "user", content: [{ type: "text", text: "Ship the footer" }] } },
+    { id: "a1", type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "SECRET_THOUGHT" }, { type: "text", text: "Checked" }, { type: "toolCall", name: "bash", arguments: { password: "SECRET_ARGUMENT" } }] } },
+    { id: "t1", type: "message", message: { role: "toolResult", content: [{ type: "text", text: "SECRET_OUTPUT" }] } },
+  ], [
+    { entry: { id: "u1", type: "message", message: { role: "user", content: "Ship the footer" } }, children: [] },
+    { entry: { id: "u2", type: "message", message: { role: "user", content: "Try another branch" } }, label: "alt", children: [] },
+  ]);
+  assert.match(outline, /Active agent trace/);
+  assert.match(outline, /user: Ship the footer/);
+  assert.match(outline, /assistant: Checked; tools: bash/);
+  assert.match(outline, /Other \/tree branches/);
+  assert.match(outline, /alt: Try another branch/);
+  assert.doesNotMatch(outline, /SECRET_THOUGHT|SECRET_ARGUMENT|SECRET_OUTPUT/);
 });
 
 test("prompt includes bounded visible activities only and treats input as untrusted", () => {
   const prompt = promptFor(summary, [{ type: "tool", text: "bash: finished" }]);
   assert.match(prompt, /untrusted data/);
+  const outlinePrompt = promptFor(summary, [{ type: "user", text: "Active agent trace" }], true);
+  assert.match(outlinePrompt, /Keep goal unchanged/);
+  assert.match(outlinePrompt, /not the latest tool/);
   assert.doesNotMatch(prompt, /tool output/);
 });
 

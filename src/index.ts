@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { BriefController, cleanText, display, footerStatus, isBrief, type Activity, type Brief } from "./brief.ts";
+import { BriefController, cleanText, display, footerStatus, isBrief, sessionOutline, type Brief } from "./brief.ts";
 
 const key = "pi-brief";
 // Footer statuses are sorted by key before Pi truncates the shared line.
@@ -45,25 +45,9 @@ function modelFailure(reply: { stopReason: string; errorMessage?: string }): str
   return detail ? `model stopped: ${reply.stopReason}: ${detail}` : `model stopped: ${reply.stopReason}`;
 }
 
-function visibleText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.flatMap((part) => {
-    if (!part || typeof part !== "object") return [];
-    const item = part as { type?: string; text?: string };
-    return item.type === "text" && typeof item.text === "string" ? [item.text] : [];
-  }).join(" ");
-}
-
-function recentActivity(ctx: ExtensionContext): Activity[] {
-  const events: Activity[] = [];
-  for (const entry of ctx.sessionManager.getBranch() as Array<{ type?: string; message?: { role?: string; content?: unknown } }>) {
-    if (entry.type !== "message" || (entry.message?.role !== "user" && entry.message?.role !== "assistant")) continue;
-    const text = visibleText(entry.message.content);
-    if (!text.trim()) continue;
-    events.push({ type: entry.message.role, text });
-  }
-  return events.slice(-8);
+function outlineFor(ctx: ExtensionContext): string {
+  const manager = ctx.sessionManager as { getBranch: () => unknown[]; getTree?: () => unknown[] };
+  return sessionOutline(manager.getBranch(), manager.getTree?.() ?? []);
 }
 
 function savedBrief(ctx: ExtensionContext): Brief | undefined {
@@ -88,7 +72,9 @@ export default function piBrief(pi: ExtensionAPI) {
 
   function show(ctx: ExtensionContext) {
     if (ctx.mode !== "tui") return;
-    const text = footerStatus(controller?.brief, activity);
+    const state = activity === "update failed" || activity === "limit reached" || activity.startsWith("off:") || activity.startsWith("config error")
+      ? activity : "";
+    const text = footerStatus(controller?.brief, state);
     const theme = (ctx.ui as { theme?: { fg?: (color: string, value: string) => string } }).theme;
     const shown = theme?.fg ? theme.fg("accent", text) : text;
     ctx.ui.setStatus(footerKey, shown);
@@ -122,7 +108,7 @@ export default function piBrief(pi: ExtensionAPI) {
       return;
     }
     modelName = config.model;
-    activity = "ready";
+    activity = "";
     const restored = savedBrief(ctx);
     const fallbackSessionId = randomUUID();
     const current = new BriefController(async (prompt, signal) => {
@@ -146,10 +132,9 @@ export default function piBrief(pi: ExtensionAPI) {
     }, restored, config.maxCalls, config.maxCostUsd);
     controller = current;
     show(ctx);
-    if (!restored) {
-      for (const event of recentActivity(ctx)) current.add(event);
-      current.trigger();
-    }
+    const outline = outlineFor(ctx);
+    if (restored && !outline) current.noteOutline("");
+    else if (outline) current.revise(outline);
   }
 
   pi.on("session_start", (_event, ctx) => start(ctx));
@@ -161,25 +146,11 @@ export default function piBrief(pi: ExtensionAPI) {
       if ("setWidget" in ctx.ui) ctx.ui.setWidget(widgetKey, undefined);
     }
   });
-  pi.on("before_agent_start", (event, ctx) => {
-    controller?.add({ type: "user", text: event.prompt }, true);
-    if (controller) { activity = "working"; show(ctx); }
-  });
-  pi.on("tool_execution_start", (event, ctx) => {
-    if (controller) { activity = `using ${cleanText(event.toolName, 16)}`; show(ctx); }
-  });
-  pi.on("tool_execution_end", (event, ctx) => {
-    controller?.add({ type: "tool", text: `${event.toolName}: ${event.isError ? "failed" : "finished"}` });
-    if (controller) { activity = "working"; show(ctx); }
-  });
-  pi.on("message_end", (event) => {
-    if (event.message.role !== "assistant") return;
-    // Only visible assistant text; never send thinking, tool arguments, or tool output.
-    const text = event.message.content.filter((part) => part.type === "text").map((part) => part.text).join(" ");
-    controller?.add({ type: "assistant", text });
-  });
   pi.on("agent_settled", (_event, ctx) => {
-    if (controller) { activity = controller.stats.error ? "update failed" : controller.stats.limit ? "limit reached" : ""; show(ctx); controller.trigger(); }
+    if (!controller) return;
+    activity = controller.stats.error ? "update failed" : controller.stats.limit ? "limit reached" : "";
+    show(ctx);
+    controller.revise(outlineFor(ctx));
   });
   pi.registerCommand("brief", {
     description: "Show the session brief; /brief status shows model, calls, cost and errors; /brief refresh retries pending activity",
@@ -191,7 +162,10 @@ export default function piBrief(pi: ExtensionAPI) {
       if (!controller) {
         ctx.ui.notify(`Brief off. Set PI_BRIEF_MODEL=provider/model or configure ${configPath}.`, "info"); return;
       }
-      if (action === "refresh") await controller.flush(true);
+      if (action === "refresh") {
+        controller.revise(outlineFor(ctx), true);
+        while (controller.stats.running) await new Promise((resolve) => setImmediate(resolve));
+      }
       const s = controller.stats;
       ctx.ui.notify(action === "status"
         ? `${modelName} · ${s.calls} calls · $${s.cost.toFixed(5)} · ${s.pending} pending${s.limit ? " · limit reached" : ""}${s.error ? ` · last error: ${s.error}` : ""}`
