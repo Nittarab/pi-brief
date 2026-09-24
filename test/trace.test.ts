@@ -1,10 +1,24 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assess, emptyMemory, isPivot, isSuspect, phrase, railColor, renderRail, sameTask, type TraceMemory, type TraceStep, type TraceUser } from "../src/trace.ts";
+import { acceptModelGoal, assess, emptyMemory, isPivot, isSuspect, phrase, railColor, renderRail, sameTask, type TraceMemory, type TraceStep, type TraceUser } from "../src/trace.ts";
 
 function run(users: TraceUser[], steps: TraceStep[] = [], modelGoal = "", modelNow = "", memory: TraceMemory = emptyMemory()) {
   return assess(memory, { users, steps, modelGoal, modelNow });
 }
+
+test("a check question does not replace the sustained goal", () => {
+  const users = [
+    { text: '<skill name="cto-os-daily-standup">run</skill>' },
+    { text: "Can we fix the pi-brief TUI?" },
+    { text: "I want the agentic trace presented by the model" },
+    { text: "why is the goal daily standup? that clearly is not" },
+  ];
+  const locked = assess(emptyMemory(), { users, steps: [] }).memory.locked;
+  assert.match(locked, /fix the pi-brief TUI/);
+  assert.equal(acceptModelGoal("Explain why the goal is standup", users, locked), "");
+  assert.equal(acceptModelGoal("Run the daily standup", users, locked), "");
+  assert.match(acceptModelGoal("Show a model-written agent trace while the session runs", users, locked), /agent trace/);
+});
 
 test("a skill tag does not become the goal", () => {
   const assessed = run([

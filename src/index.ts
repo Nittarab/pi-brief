@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { BriefController, briefLine, cleanText, display, isBrief, parsePresented, sessionOutline, type Brief, type Presented } from "./brief.ts";
-import { assess, emptyMemory, emptyRail, isWrapper, phrase, railColor, renderRail, usersFrom, type Rail, type TraceMemory } from "./trace.ts";
+import { acceptModelGoal, assess, emptyMemory, emptyRail, isWrapper, phrase, railColor, renderRail, usersFrom, type Rail, type TraceMemory } from "./trace.ts";
 
 const key = "pi-brief";
 // Older builds wrote this footer key. Clear it so the line is not shown twice.
@@ -91,6 +91,7 @@ export default function piBrief(pi: ExtensionAPI) {
   let pendingUser = "";
   let inFlight = "";
   let railWanted = true;
+  let displayGoal = "";
   let railOpen = false;
   let closeRail: (() => void) | undefined;
   let hideRail: ((hidden: boolean) => void) | undefined;
@@ -98,7 +99,7 @@ export default function piBrief(pi: ExtensionAPI) {
 
   function shownBrief(): Brief {
     const model = controller?.brief ?? { goal: "—", done: "—", now: "—", next: "—", blocked: "—" };
-    const goal = phrase(memory.locked || model.goal);
+    const goal = phrase(displayGoal || memory.locked || model.goal);
     const now = rail.drift ? `! ${phrase(rail.drift)}` : rail.left ? "! left path" : phrase(model.now);
     return { ...model, goal, now };
   }
@@ -128,6 +129,7 @@ export default function piBrief(pi: ExtensionAPI) {
       users, steps: [], modelGoal: controller?.brief.goal, modelNow: controller?.brief.now, inFlight,
     });
     memory = next.memory;
+    displayGoal = acceptModelGoal(controller?.brief.goal ?? "", users, memory.locked) || memory.locked;
     rail = { ...next.rail, presented: controller?.presented ?? [] };
     show(ctx);
   }
@@ -141,6 +143,7 @@ export default function piBrief(pi: ExtensionAPI) {
       return {
         invalidate() {},
         render(width: number) {
+          if (!railWanted) return [];
           const lines = renderRail(rail, width, Math.max(8, tui.terminal.rows));
           return lines.map((line) => theme.fg(railColor(line), line));
         },
@@ -276,9 +279,15 @@ export default function piBrief(pi: ExtensionAPI) {
         ctx.ui.notify("Use /trace, /trace on, or /trace off", "warning"); return;
       }
       railWanted = action === "off" ? false : action === "on" ? true : !railWanted;
-      if (railWanted) openRail(ctx);
-      hideRail?.(!railWanted);
-      paintRail?.();
+      if (!railWanted) {
+        hideRail?.(true);
+        paintRail?.();
+        closeRail?.();
+      } else {
+        openRail(ctx);
+        hideRail?.(false);
+        paintRail?.();
+      }
       ctx.ui.notify(railWanted ? "Trace rail on" : "Trace rail off", "info");
     },
   });

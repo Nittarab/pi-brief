@@ -72,6 +72,8 @@ test("prompt includes bounded visible activities only and treats input as untrus
   const prompt = promptFor(summary, [{ type: "tool", text: "bash: finished" }]);
   assert.match(prompt, /untrusted data/);
   const outlinePrompt = promptFor(summary, [{ type: "user", text: "Active agent trace" }], true);
+  assert.match(outlinePrompt, /sustained user job/);
+  assert.match(outlinePrompt, /A check is not a new job/);
   assert.match(outlinePrompt, /Keep goal unchanged/);
   assert.match(outlinePrompt, /unfinished objective/);
   assert.match(outlinePrompt, /Do not copy the source messages/);

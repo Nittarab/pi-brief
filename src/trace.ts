@@ -60,8 +60,23 @@ export function isWrapper(text: string): boolean {
 }
 
 function lockText(text: string): string {
-  const plain = cleanText(text, 400).replace(/^(?:\/\S+\s+)+/, "");
+  const plain = cleanText(text, 400)
+    .replace(/\/(?:Users|home|tmp)\/\S+/g, " ")
+    .replace(/CleanShot\b.*?\.png/gi, " ")
+    .replace(/^(?:\/\S+\s+)+/, "");
   return cleanText(plain, 140).replace(/^(?:actually[, ]+|instead[, ]+|new task[:, ]+)/i, "").trim() || cleanText(plain, 140);
+}
+
+const rejectedGoal = /standup|skill tag|explain why|why the goal|current question|hilarious|what(?:'s| is) the goal/i;
+
+export function acceptModelGoal(goal: string, users: TraceUser[], locked: string): string {
+  const text = cleanText(goal, 140);
+  if (!text || text === "—" || rejectedGoal.test(text) || isWrapper(text)) return "";
+  const real = users.filter((user) => !isWrapper(user.text));
+  const lockWords = new Set(contentWords(locked));
+  const later = new Set(real.slice(1).flatMap((user) => contentWords(user.text)));
+  const adds = contentWords(text).some((word) => word.length > 3 && later.has(word) && !lockWords.has(word));
+  return adds ? text : "";
 }
 
 export function branchKey(users: TraceUser[]): string {

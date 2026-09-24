@@ -17,6 +17,8 @@ test("simulated session drives the rail without extra model calls", async () => 
   let branch: unknown[] = [];
   let rails: string[] = [];
   let paint = () => {};
+  let closed = false;
+  const commands = new Map<string, (args: string, ctx: ExtensionContext) => Promise<void>>();
   let options: { overlay?: boolean; overlayOptions?: { nonCapturing?: boolean; anchor?: string; visible?: (columns: number) => boolean } } | undefined;
   const theme = { fg: (_color: string, value: string) => value };
   const ctx = {
@@ -27,7 +29,7 @@ test("simulated session drives the rail without extra model calls", async () => 
       notify() {},
       custom: async (factory: (tui: { requestRender: () => void; terminal: { rows: number; columns: number } }, theme: { fg: (color: string, value: string) => string }, keys: unknown, done: (result: undefined) => void) => { render: (width: number) => string[] }, next: NonNullable<typeof options>) => {
         options = next;
-        const component = factory({ requestRender() { paint(); }, terminal: { rows: 18, columns: 140 } }, theme, {}, () => {});
+        const component = factory({ requestRender() { paint(); }, terminal: { rows: 18, columns: 140 } }, theme, {}, () => { closed = true; });
         paint = () => { rails = component.render(34); };
         paint();
       },
@@ -41,7 +43,7 @@ test("simulated session drives the rail without extra model calls", async () => 
   extension({
     on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => void) => { handlers.set(name, handler); return () => {}; },
     appendEntry() {},
-    registerCommand() {},
+    registerCommand(name: string, spec: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) { commands.set(name, spec.handler); },
   } as unknown as ExtensionAPI);
   const emit = (name: string) => handlers.get(name)?.({}, ctx);
   handlers.get("session_start")?.({}, ctx);
@@ -78,4 +80,8 @@ test("simulated session drives the rail without extra model calls", async () => 
   handlers.get("session_tree")?.({}, ctx);
   assert.match(rails.join("\n"), /↩ Write the standup/);
   assert.match(rails.join("\n"), /Fix the brief line|add a right rail/);
+  await commands.get("trace")?.("", ctx);
+  assert.equal(closed, true, "/trace closes the overlay");
+  assert.equal(options?.overlayOptions?.visible?.(140), false);
+  assert.equal(rails.join("").trim(), "");
 });
