@@ -129,7 +129,7 @@ export default function piBrief(pi: ExtensionAPI) {
         invalidate() {},
         render(width: number) {
           const lines = renderRail(rail, width, Math.max(8, tui.terminal.rows));
-          return lines.map((line) => theme.fg(line.includes("! ") || line.includes("? ") ? "warning" : "dim", line));
+          return lines.map((line) => theme.fg(/^[!?↩]/.test(line) ? "warning" : "dim", line));
         },
       };
     }, {

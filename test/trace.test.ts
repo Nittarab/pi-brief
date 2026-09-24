@@ -19,10 +19,9 @@ test("simulated stable session keeps the lock and ignores short follow-ups", () 
   assert.equal(first.rail.left, "");
   assert.equal(isPivot("ok do it"), false);
   const rail = renderRail(first.rail, 34, 16).join("\n");
-  assert.match(rail, /LOCKED/);
-  assert.match(rail, /Fix the brief line/);
-  assert.match(rail, /\* tool bash/);
-  assert.doesNotMatch(rail, /SENSITIVE|password/);
+  assert.match(rail, /● Fix the brief line/);
+  assert.match(rail, /◇ I will fit the row/);
+  assert.doesNotMatch(rail, /bash|tool|user |assistant /);
   for (const line of rail.split("\n")) assert.ok(line.length <= 34, line);
 });
 
@@ -40,8 +39,8 @@ test("simulated model drift does not move the lock", () => {
   assert.equal(sameTask("Fix the brief line", "Fix the brief display"), true);
   assert.equal(sameTask("Fix the brief line", "Publish the npm package"), false);
   const text = renderRail(drifted.rail, 40, 12).join("\n");
-  assert.match(text, /! drift Publish the npm package/);
-  assert.match(text, /LOCKED/);
+  assert.match(text, /! Publish the npm package/);
+  assert.match(text, /● Fix the brief line/);
 });
 
 test("simulated user pivot moves the lock and a side ask does not", () => {
@@ -56,7 +55,7 @@ test("simulated user pivot moves the lock and a side ask does not", () => {
   assert.equal(side.memory.locked, "Fix the brief line");
   assert.equal(isSuspect("Fix the brief line", "add a right rail"), true);
   assert.match(side.rail.suspect, /add a right rail/);
-  assert.match(renderRail(side.rail, 40, 14).join("\n"), /\? ask add a right rail/);
+  assert.match(renderRail(side.rail, 40, 14).join("\n"), /\? add a right rail/);
 
   const moved = run(
     [{ id: "u1", text: "Fix the brief line" }, { id: "u2", text: "instead, add a right rail" }],
@@ -76,7 +75,7 @@ test("simulated branch switch keeps the old goal visible", () => {
   const left = run([{ id: "u9", text: "Write the standup" }], [], "Write the standup", "Draft notes", locked);
   assert.equal(left.memory.locked, "Fix the brief line");
   assert.equal(left.rail.left, "Write the standup");
-  assert.match(renderRail(left.rail, 36, 10).join("\n"), /! left Write the standup/);
+  assert.match(renderRail(left.rail, 36, 10).join("\n"), /↩ Write the standup/);
   const back = run([{ id: "u1", text: "Fix the brief line" }], [], "Fix the brief line", "Fit the row", left.memory);
   assert.equal(back.rail.left, "");
   assert.equal(back.memory.locked, "Fix the brief line");
@@ -85,11 +84,12 @@ test("simulated branch switch keeps the old goal visible", () => {
 test("rail fills the requested height and never exceeds the width", () => {
   const assessed = run(
     [{ id: "u1", text: "Fix the brief line so the session stays on the task" }],
-    Array.from({ length: 12 }, (_, index) => ({ role: "tool" as const, text: `bash ${index}` })),
+    Array.from({ length: 12 }, (_, index) => ({ role: "assistant" as const, text: `turn ${index}` })),
   );
   const lines = renderRail(assessed.rail, 28, 9);
   assert.equal(lines.length, 9);
-  assert.match(lines[0] ?? "", /LOCKED/);
-  assert.match(lines.join("\n"), /bash 11/);
+  assert.match(lines[0] ?? "", /● /);
+  assert.match(lines.join("\n"), /turn 11/);
+  assert.doesNotMatch(lines.join("\n"), /tool/);
   for (const line of lines) assert.ok(line.length <= 28, line);
 });

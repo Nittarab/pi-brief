@@ -3,7 +3,7 @@ import { cleanText } from "./brief.ts";
 export type TraceUser = { id?: string; text: string };
 export type TraceStep = { role: "user" | "assistant" | "tool"; text: string };
 export type TraceMemory = { locked: string; lockBranch: string };
-export type RailStep = { flag: ">" | "!" | "?" | "o" | "*"; text: string };
+export type RailStep = { flag: "●" | "◇" | "!" | "?"; text: string };
 export type Rail = { locked: string; drift: string; suspect: string; left: string; steps: RailStep[] };
 
 const continuations = new Set([
@@ -100,13 +100,10 @@ export function assess(memory: TraceMemory, input: {
   const onLockBranch = !lockBranch || key === lockBranch;
   const suspect = onLockBranch && isSuspect(locked, latest) ? latest : "";
   const left = lockBranch && key !== lockBranch ? (users[0]?.text ?? "—") : "";
-  const steps = input.steps.filter((step) => cleanText(step.text, 80)).map((step) => ({
-    flag: step.role === "tool" ? "*" as const : step.role === "assistant" ? "o" as const : isPivot(step.text) ? "!" as const : isSuspect(locked, step.text) ? "?" as const : ">" as const,
-    text: `${step.role} ${cleanText(step.text, 80)}`,
+  const steps = input.steps.filter((step) => step.role !== "tool" && cleanText(step.text, 80)).map((step) => ({
+    flag: step.role === "assistant" ? "◇" as const : isPivot(step.text) ? "!" as const : isSuspect(locked, step.text) ? "?" as const : "●" as const,
+    text: cleanText(step.text, 80),
   }));
-  if (input.inFlight && steps.at(-1)?.text !== `tool ${cleanText(input.inFlight, 24)}`) {
-    steps.push({ flag: "*", text: `tool ${cleanText(input.inFlight, 24)}` });
-  }
   return {
     memory: { locked, lockBranch },
     rail: { locked, drift: driftText(locked, users, input.modelGoal, input.modelNow), suspect, left, steps },
@@ -121,15 +118,6 @@ function visibleText(content: unknown): string {
     const item = part as { type?: string; text?: string };
     return item.type === "text" && typeof item.text === "string" ? [item.text] : [];
   }).join(" ");
-}
-
-function toolNames(content: unknown): string[] {
-  if (!Array.isArray(content)) return [];
-  return content.flatMap((part) => {
-    if (!part || typeof part !== "object") return [];
-    const item = part as { type?: string; name?: string };
-    return item.type === "toolCall" && typeof item.name === "string" ? [cleanText(item.name, 24)] : [];
-  });
 }
 
 type Loose = { id?: string; type?: string; message?: { role?: string; content?: unknown } };
@@ -158,48 +146,35 @@ export function stepsFrom(branch: unknown[]): TraceStep[] {
     } else if (item.message.role === "assistant") {
       const text = cleanText(visibleText(item.message.content), 80);
       if (text) steps.push({ role: "assistant", text });
-      for (const name of toolNames(item.message.content)) steps.push({ role: "tool", text: name });
     }
   }
   return steps;
 }
 
-function wrap(text: string, width: number): string[] {
-  const limit = Math.max(1, width);
-  const lines: string[] = [];
-  let line = "";
-  for (const word of (text || "—").split(/\s+/)) {
-    const next = line ? `${line} ${word}` : word;
-    if (next.length <= limit) line = next;
-    else {
-      if (line) lines.push(line);
-      line = word.length > limit ? `${word.slice(0, Math.max(1, limit - 1))}…` : word;
-    }
-  }
-  if (line) lines.push(line);
-  return lines.length ? lines : ["—"];
+function clipLine(text: string, width: number): string {
+  if (text.length <= width) return text;
+  if (width <= 1) return "…";
+  return `${text.slice(0, width - 1).trimEnd()}…`;
 }
 
-function row(text: string, width: number): string {
-  const columns = Math.max(4, width);
-  if (!text) return `|${" ".repeat(columns - 1)}`;
-  const body = wrap(text, Math.max(1, columns - 2))[0] ?? "";
-  const line = `| ${body}`;
-  return line.length <= columns ? line : line.slice(0, columns);
+function mark(icon: string, text: string, width: number): string {
+  const row = text ? `${icon} ${text}` : icon;
+  return clipLine(row, width);
 }
 
 export function renderRail(rail: Rail, width: number, height: number): string[] {
   const columns = Math.max(4, Math.floor(width));
   const rows = Math.max(1, Math.floor(height));
-  const header = [row("LOCKED", columns), ...wrap(rail.locked || "—", columns - 2).map((line) => row(line, columns))];
-  if (rail.drift) header.push(row("", columns), row(`! drift ${rail.drift}`, columns));
-  if (rail.suspect) header.push(row("", columns), row(`? ask ${rail.suspect}`, columns));
-  if (rail.left) header.push(row("", columns), row(`! left ${rail.left}`, columns));
-  header.push(row("", columns));
+  const header = [mark("●", rail.locked || "—", columns)];
+  if (rail.drift) header.push(mark("!", rail.drift, columns));
+  if (rail.suspect) header.push(mark("?", rail.suspect, columns));
+  if (rail.left) header.push(mark("↩", rail.left, columns));
   const room = Math.max(0, rows - header.length);
-  const spine = rail.steps.map((step) => row(`${step.flag} ${step.text}`, columns));
-  const visible = spine.length > room ? [row("…", columns), ...spine.slice(-(Math.max(0, room - 1)))] : spine;
+  const spine = rail.steps
+    .filter((step) => step.text !== rail.locked)
+    .map((step) => mark(step.flag, step.text, columns));
+  const visible = spine.length > room ? [mark("…", "", columns), ...spine.slice(-(Math.max(0, room - 1)))] : spine;
   const lines = [...header, ...visible];
-  while (lines.length < rows) lines.push(row("", columns));
-  return lines.slice(0, rows).map((line) => line.length <= columns ? line : line.slice(0, columns));
+  while (lines.length < rows) lines.push("");
+  return lines.slice(0, rows);
 }

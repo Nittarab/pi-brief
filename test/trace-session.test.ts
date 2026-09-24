@@ -56,14 +56,13 @@ test("simulated session drives the rail without extra model calls", async () => 
   handlers.get("tool_execution_start")?.({ toolName: "bash", args: { password: "SECRET" } }, ctx);
   assert.equal(calls.length, 0, "the live rail does not call the model");
   assert.doesNotMatch(rails.join("\n"), /SECRET/);
-  assert.match(rails.join("\n"), /LOCKED/);
-  assert.match(rails.join("\n"), /Fix the brief line/);
-  assert.match(rails.join("\n"), /tool bash/);
+  assert.match(rails.join("\n"), /● Fix the brief line/);
+  assert.doesNotMatch(rails.join("\n"), /tool|bash|SECRET/);
 
   handlers.get("agent_settled")?.({}, ctx);
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(calls.length, 1);
-  assert.match(rails.join("\n"), /! drift Publish the npm package/);
+  assert.match(rails.join("\n"), /! Publish the npm package/);
   assert.match(rails.join("\n"), /Fix the brief line/);
 
   branch = [
@@ -76,6 +75,6 @@ test("simulated session drives the rail without extra model calls", async () => 
 
   branch = [{ id: "u9", type: "message", message: { role: "user", content: "Write the standup" } }];
   handlers.get("session_tree")?.({}, ctx);
-  assert.match(rails.join("\n"), /! left Write the standup/);
+  assert.match(rails.join("\n"), /↩ Write the standup/);
   assert.match(rails.join("\n"), /Fix the brief line|add a right rail/);
 });
