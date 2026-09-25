@@ -16,10 +16,8 @@ test("simulated session drives the rail without extra model calls", async () => 
   const calls: string[] = [];
   let branch: unknown[] = [];
   let rails: string[] = [];
-  let paint = () => {};
-  let closed = false;
+  let footerCleared = false;
   const commands = new Map<string, (args: string, ctx: ExtensionContext) => Promise<void>>();
-  let options: { overlay?: boolean; overlayOptions?: { nonCapturing?: boolean; anchor?: string; visible?: (columns: number) => boolean } } | undefined;
   const theme = { fg: (_color: string, value: string) => value };
   const ctx = {
     mode: "tui",
@@ -27,11 +25,12 @@ test("simulated session drives the rail without extra model calls", async () => 
       setStatus() {},
       setWidget() {},
       notify() {},
-      custom: async (factory: (tui: { requestRender: () => void; terminal: { rows: number; columns: number } }, theme: { fg: (color: string, value: string) => string }, keys: unknown, done: (result: undefined) => void) => { render: (width: number) => string[] }, next: NonNullable<typeof options>) => {
-        options = next;
-        const component = factory({ requestRender() { paint(); }, terminal: { rows: 18, columns: 140 } }, theme, {}, () => { closed = true; });
-        paint = () => { rails = component.render(34); };
-        paint();
+      setFooter(factory?: (tui: { requestRender: () => void }, theme: { fg: (color: string, value: string) => string }, footerData: { onBranchChange?: (fn: () => void) => void }) => { render: (width: number) => string[] }) {
+        if (!factory) { footerCleared = true; rails = []; return; }
+        footerCleared = false;
+        let component: { render: (width: number) => string[] } | undefined;
+        component = factory({ requestRender() { rails = component?.render(80) ?? []; } }, theme, {});
+        rails = component.render(80);
       },
     },
     modelRegistry: {
@@ -47,11 +46,8 @@ test("simulated session drives the rail without extra model calls", async () => 
   } as unknown as ExtensionAPI);
   const emit = (name: string) => handlers.get(name)?.({}, ctx);
   handlers.get("session_start")?.({}, ctx);
-  assert.equal(options?.overlay, true);
-  assert.equal(options?.overlayOptions?.nonCapturing, true);
-  assert.equal(options?.overlayOptions?.anchor, "right-center");
-  assert.equal(options?.overlayOptions?.visible?.(80), false);
-  assert.equal(options?.overlayOptions?.visible?.(140), true);
+  assert.equal(footerCleared, false);
+  assert.match(rails.join("\n"), /◇ reading/);
 
   branch = [{ id: "u1", type: "message", message: { role: "user", content: "Fix the brief line" } }];
   handlers.get("before_agent_start")?.({ prompt: "Fix the brief line" }, ctx);
@@ -81,7 +77,6 @@ test("simulated session drives the rail without extra model calls", async () => 
   assert.match(rails.join("\n"), /↩ Write the standup/);
   assert.match(rails.join("\n"), /Fix the brief line|add a right rail/);
   await commands.get("trace")?.("", ctx);
-  assert.equal(closed, true, "/trace closes the overlay");
-  assert.equal(options?.overlayOptions?.visible?.(140), false);
+  assert.equal(footerCleared, true, "/trace restores the built-in status line");
   assert.equal(rails.join("").trim(), "");
 });

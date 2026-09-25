@@ -79,8 +79,52 @@ function savedBrief(ctx: ExtensionContext): Brief | undefined {
   return undefined;
 }
 
-const railWidth = 34;
-const railMinColumns = 100;
+const traceLines = 6;
+
+type Usage = { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } };
+
+function formatTokens(count: number): string {
+  if (count < 1000) return String(count);
+  if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
+  if (count < 1_000_000) return `${Math.round(count / 1000)}k`;
+  if (count < 10_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
+  return `${Math.round(count / 1_000_000)}M`;
+}
+
+function statusLine(ctx: ExtensionContext, theme: Theme, footerData: { getAvailableProviderCount?: () => number }, width: number): string {
+  const entries = typeof ctx.sessionManager.getEntries === "function" ? ctx.sessionManager.getEntries() : ctx.sessionManager.getBranch();
+  let input = 0, output = 0, cacheRead = 0, cost = 0, hit = 0, hitBase = 0;
+  for (const raw of entries) {
+    const entry = raw as { type?: string; usage?: Usage; message?: { role?: string; usage?: Usage } };
+    const usage = entry.type === "usage" ? entry.usage : entry.message?.usage;
+    if (!usage) continue;
+    input += usage.input ?? 0;
+    output += usage.output ?? 0;
+    cacheRead += usage.cacheRead ?? 0;
+    cost += usage.cost?.total ?? 0;
+    if (entry.type === "message" && entry.message?.role === "assistant") {
+      const base = (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+      if (base > 0) { hit = usage.cacheRead ?? 0; hitBase = base; }
+    }
+  }
+  const context = ctx.getContextUsage?.();
+  const parts = [];
+  if (input) parts.push(`↑${formatTokens(input)}`);
+  if (output) parts.push(`↓${formatTokens(output)}`);
+  if (cacheRead) parts.push(`R${formatTokens(cacheRead)}`);
+  if (hitBase) parts.push(`CH${((hit / hitBase) * 100).toFixed(1)}%`);
+  if (cost) parts.push(`$${cost.toFixed(3)}`);
+  const window = context?.contextWindow ?? ctx.model?.contextWindow ?? 0;
+  const percent = context?.percent == null ? "?" : context.percent.toFixed(1);
+  if (window) parts.push(`${percent}%/${formatTokens(window)} (auto)`);
+  const left = parts.join(" ") || "pi-brief";
+  const model = ctx.model;
+  const thinking = model?.reasoning ? ` • ${ctx.thinkingLevel || "off"}` : "";
+  let right = model ? `${model.id}${thinking}` : "";
+  if (model && (footerData.getAvailableProviderCount?.() ?? 0) > 1) right = `(${model.provider}) ${right}`;
+  const gap = Math.max(2, width - left.length - right.length);
+  return theme.fg("dim", `${left}${" ".repeat(gap)}${right}`.slice(0, width));
+}
 
 export default function piBrief(pi: ExtensionAPI) {
   let controller: BriefController | undefined;
@@ -92,9 +136,7 @@ export default function piBrief(pi: ExtensionAPI) {
   let inFlight = "";
   let railWanted = true;
   let displayGoal = "";
-  let railOpen = false;
-  let closeRail: (() => void) | undefined;
-  let hideRail: ((hidden: boolean) => void) | undefined;
+  let traceOpen = false;
   let paintRail: (() => void) | undefined;
 
   function shownBrief(): Brief {
@@ -134,28 +176,28 @@ export default function piBrief(pi: ExtensionAPI) {
     show(ctx);
   }
 
-  function openRail(ctx: ExtensionContext) {
-    if (ctx.mode !== "tui" || railOpen || typeof ctx.ui.custom !== "function") return;
-    railOpen = true;
-    void ctx.ui.custom((tui, theme, _keys, done) => {
-      closeRail = () => { closeRail = undefined; hideRail = undefined; paintRail = undefined; railOpen = false; done(undefined); };
+  function closeTrace(ctx: ExtensionContext) {
+    traceOpen = false;
+    paintRail = undefined;
+    if (typeof ctx.ui.setFooter === "function") ctx.ui.setFooter(undefined);
+  }
+
+  function openTrace(ctx: ExtensionContext) {
+    if (ctx.mode !== "tui" || !railWanted || typeof ctx.ui.setFooter !== "function") return;
+    if (traceOpen) { paintRail?.(); return; }
+    traceOpen = true;
+    ctx.ui.setFooter((tui, theme, footerData) => {
+      const unsub = footerData.onBranchChange?.(() => tui.requestRender());
       paintRail = () => tui.requestRender();
       return {
+        dispose() { unsub?.(); },
         invalidate() {},
         render(width: number) {
-          if (!railWanted) return [];
-          const lines = renderRail(rail, width, Math.max(8, tui.terminal.rows));
-          return lines.map((line) => theme.fg(railColor(line), line));
+          const trace = renderRail(rail, width, traceLines).filter((line) => line.trim()).map((line) => theme.fg(railColor(line), line));
+          return [statusLine(ctx, theme, footerData, width), ...trace];
         },
       };
-    }, {
-      overlay: true,
-      overlayOptions: {
-        anchor: "right-center", width: railWidth, maxHeight: "100%", margin: 0, nonCapturing: true,
-        visible: (columns) => railWanted && columns >= railMinColumns,
-      },
-      onHandle: (handle) => { hideRail = (hidden) => handle.setHidden(hidden); },
-    }).catch(() => { railOpen = false; closeRail = undefined; });
+    });
   }
 
   function start(ctx: ExtensionContext) {
@@ -219,14 +261,14 @@ export default function piBrief(pi: ExtensionAPI) {
     rail = emptyRail();
     pendingUser = "";
     inFlight = "";
-    closeRail?.();
+    closeTrace(ctx);
     start(ctx);
-    openRail(ctx);
+    openTrace(ctx);
   });
   pi.on("session_tree", (_event, ctx) => start(ctx));
   pi.on("session_shutdown", (_event, ctx) => {
     controller?.close(); controller = undefined;
-    closeRail?.();
+    closeTrace(ctx);
     if (ctx.mode === "tui") {
       ctx.ui.setStatus(footerKey, undefined);
       if ("setWidget" in ctx.ui) ctx.ui.setWidget(widgetKey, undefined);
@@ -273,23 +315,16 @@ export default function piBrief(pi: ExtensionAPI) {
     },
   });
   pi.registerCommand("trace", {
-    description: "Show or hide the right-side trace rail",
+    description: "Show or hide the trace under the status line",
     handler: async (args, ctx) => {
       const action = args.trim();
       if (action && action !== "on" && action !== "off") {
         ctx.ui.notify("Use /trace, /trace on, or /trace off", "warning"); return;
       }
       railWanted = action === "off" ? false : action === "on" ? true : !railWanted;
-      if (!railWanted) {
-        hideRail?.(true);
-        paintRail?.();
-        closeRail?.();
-      } else {
-        openRail(ctx);
-        hideRail?.(false);
-        paintRail?.();
-      }
-      ctx.ui.notify(railWanted ? "Trace rail on" : "Trace rail off", "info");
+      if (!railWanted) closeTrace(ctx);
+      else openTrace(ctx);
+      ctx.ui.notify(railWanted ? "Trace under the status line" : "Trace off", "info");
     },
   });
 }
