@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { BriefController, briefLine, cleanText, display, isBrief, parsePresented, sessionOutline, type Brief, type Presented } from "./brief.ts";
+import { footerLines } from "./footer.ts";
 import { acceptModelGoal, assess, emptyMemory, emptyRail, isWrapper, phrase, railColor, renderRail, usersFrom, type Rail, type TraceMemory } from "./trace.ts";
 
 const key = "pi-brief";
@@ -82,51 +83,6 @@ function savedBrief(ctx: ExtensionContext): Brief | undefined {
 
 const traceLines = 6;
 
-type Usage = { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } };
-
-function formatTokens(count: number): string {
-  if (count < 1000) return String(count);
-  if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-  if (count < 1_000_000) return `${Math.round(count / 1000)}k`;
-  if (count < 10_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
-  return `${Math.round(count / 1_000_000)}M`;
-}
-
-function statusLine(ctx: ExtensionContext, theme: Theme, footerData: { getAvailableProviderCount?: () => number }, width: number): string {
-  const entries = typeof ctx.sessionManager.getEntries === "function" ? ctx.sessionManager.getEntries() : ctx.sessionManager.getBranch();
-  let input = 0, output = 0, cacheRead = 0, cost = 0, hit = 0, hitBase = 0;
-  for (const raw of entries) {
-    const entry = raw as { type?: string; usage?: Usage; message?: { role?: string; usage?: Usage } };
-    const usage = entry.type === "usage" ? entry.usage : entry.message?.usage;
-    if (!usage) continue;
-    input += usage.input ?? 0;
-    output += usage.output ?? 0;
-    cacheRead += usage.cacheRead ?? 0;
-    cost += usage.cost?.total ?? 0;
-    if (entry.type === "message" && entry.message?.role === "assistant") {
-      const base = (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
-      if (base > 0) { hit = usage.cacheRead ?? 0; hitBase = base; }
-    }
-  }
-  const context = ctx.getContextUsage?.();
-  const parts = [];
-  if (input) parts.push(`↑${formatTokens(input)}`);
-  if (output) parts.push(`↓${formatTokens(output)}`);
-  if (cacheRead) parts.push(`R${formatTokens(cacheRead)}`);
-  if (hitBase) parts.push(`CH${((hit / hitBase) * 100).toFixed(1)}%`);
-  if (cost) parts.push(`$${cost.toFixed(3)}`);
-  const window = context?.contextWindow ?? ctx.model?.contextWindow ?? 0;
-  const percent = context?.percent == null ? "?" : context.percent.toFixed(1);
-  if (window) parts.push(`${percent}%/${formatTokens(window)} (auto)`);
-  const left = parts.join(" ") || "pi-brief";
-  const model = ctx.model;
-  const thinking = model?.reasoning ? ` • ${ctx.thinkingLevel || "off"}` : "";
-  let right = model ? `${model.id}${thinking}` : "";
-  if (model && (footerData.getAvailableProviderCount?.() ?? 0) > 1) right = `(${model.provider}) ${right}`;
-  const gap = Math.max(2, width - left.length - right.length);
-  return theme.fg("dim", `${left}${" ".repeat(gap)}${right}`.slice(0, width));
-}
-
 export default function piBrief(pi: ExtensionAPI) {
   let controller: BriefController | undefined;
   let modelName: string | undefined;
@@ -177,9 +133,10 @@ export default function piBrief(pi: ExtensionAPI) {
   }
 
   function closeTrace(ctx: ExtensionContext) {
+    if (!traceOpen) return;
     traceOpen = false;
     paintRail = undefined;
-    if (typeof ctx.ui.setFooter === "function") ctx.ui.setFooter(undefined);
+    ctx.ui.setFooter(undefined);
   }
 
   function openTrace(ctx: ExtensionContext) {
@@ -194,7 +151,7 @@ export default function piBrief(pi: ExtensionAPI) {
         invalidate() {},
         render(width: number) {
           const trace = renderRail(rail, width, traceLines).filter((line) => line.trim()).map((line) => theme.fg(railColor(line), line));
-          return [statusLine(ctx, theme, footerData, width), ...trace];
+          return [...footerLines(ctx, theme, footerData, width), ...trace];
         },
       };
     });
@@ -235,7 +192,7 @@ export default function piBrief(pi: ExtensionAPI) {
         messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
       }, {
         signal, timeoutMs: 30_000, maxRetries: 0, maxTokens: 700, cacheRetention: "none",
-        samplingParams: { chat_template_kwargs: { enable_thinking: false } },
+        ...(config.model === defaultModel ? { samplingParams: { chat_template_kwargs: { enable_thinking: false } } } : {}),
         // OpenCode Go rejects requests that omit this routing id. Other providers ignore it.
         sessionId: routingSessionId(ctx, fallbackSessionId),
       });

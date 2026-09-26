@@ -1,3 +1,5 @@
+import { sliceByColumn, visibleWidth } from "@earendil-works/pi-tui";
+
 export type Brief = { goal: string; done: string; now: string; next: string; blocked: string };
 export type Activity = { type: "user" | "assistant" | "tool"; text: string };
 export type SummaryResult = { text: string; cost: number; error?: string };
@@ -176,12 +178,9 @@ export function display(brief: Brief, state?: string): string[] {
 
 function clip(text: string, width: number): string {
   if (width <= 0) return "";
-  if (text.length <= width) return text;
+  if (visibleWidth(text) <= width) return text;
   if (width === 1) return "…";
-  const raw = text.slice(0, width - 1);
-  const space = raw.lastIndexOf(" ");
-  const base = space >= Math.ceil((width - 1) / 2) ? raw.slice(0, space) : raw.trimEnd();
-  return `${base}…`;
+  return `${sliceByColumn(text, 0, width - 1, true)}…`;
 }
 
 // One Goal + Now line fitted to the editor row. Cut only when the row is too narrow.
@@ -192,20 +191,22 @@ export function briefLine(brief: Brief | undefined, state = "", width = 120): st
   const goal = cleanText(brief?.goal ?? "—", 140) || "—";
   const now = cleanText(brief?.now ?? "—", 140) || "—";
   const full = `Goal: ${goal} · Now: ${now}`;
-  if (full.length <= limit) return full;
+  if (visibleWidth(full) <= limit) return full;
   const head = "Goal: ";
   const mid = " · Now: ";
-  if (limit <= head.length + mid.length) return clip(full, limit);
-  const budget = limit - head.length - mid.length;
-  let goalWidth = Math.min(goal.length, Math.max(1, Math.round(budget * goal.length / (goal.length + now.length))));
+  if (limit <= visibleWidth(head) + visibleWidth(mid)) return clip(full, limit);
+  const budget = limit - visibleWidth(head) - visibleWidth(mid);
+  const goalColumns = visibleWidth(goal);
+  const nowColumns = visibleWidth(now);
+  let goalWidth = Math.min(goalColumns, Math.max(1, Math.round(budget * goalColumns / (goalColumns + nowColumns))));
   let nowWidth = budget - goalWidth;
-  if (nowWidth > now.length) {
-    goalWidth = Math.min(goal.length, goalWidth + nowWidth - now.length);
-    nowWidth = now.length;
+  if (nowWidth > nowColumns) {
+    goalWidth = Math.min(goalColumns, goalWidth + nowWidth - nowColumns);
+    nowWidth = nowColumns;
   }
-  if (goalWidth > goal.length) {
-    nowWidth = Math.min(now.length, nowWidth + goalWidth - goal.length);
-    goalWidth = goal.length;
+  if (goalWidth > goalColumns) {
+    nowWidth = Math.min(nowColumns, nowWidth + goalWidth - goalColumns);
+    goalWidth = goalColumns;
   }
   if (nowWidth < 1) {
     nowWidth = 1;

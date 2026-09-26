@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { acceptModelGoal, assess, emptyMemory, isPivot, phrase, railColor, renderRail, sameTask, usersFrom, type TraceMemory, type TraceUser } from "../src/trace.ts";
 
 function run(users: TraceUser[], modelGoal = "", modelNow = "", memory: TraceMemory = emptyMemory()) {
@@ -121,6 +122,7 @@ test("wording drops skill tags, paths, and process openers", () => {
   assert.equal(railColor("◇ fit the row"), "thinkingText");
   assert.equal(railColor("? add a right rail"), "warning");
   assert.equal(railColor("! Publish the npm package"), "error");
+  assert.equal(railColor(renderRail({ locked: "修复终端宽度 👩🏽‍💻", drift: "", left: "", presented: [] }, 10, 3)[0]), "accent");
 });
 
 test("rail fills the requested height and never exceeds the width", () => {
@@ -133,5 +135,9 @@ test("rail fills the requested height and never exceeds the width", () => {
   assert.match(lines.join("\n"), /decided 11/);
   assert.doesNotMatch(lines.join("\n"), /Fix the brief line/);
   assert.doesNotMatch(lines.join("\n"), /tool/);
-  for (const line of lines) assert.ok(line.length <= 28, line);
+  for (const line of lines) assert.ok(visibleWidth(line) <= 28, line);
+  assessed.rail.presented = [{ who: "user", kind: "task", text: "修复终端宽度 👩🏽‍💻 e\u0301" }];
+  for (const width of [1, 10, 25]) {
+    for (const line of renderRail(assessed.rail, width, 5)) assert.ok(visibleWidth(line) <= width, line);
+  }
 });

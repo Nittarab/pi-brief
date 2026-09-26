@@ -17,6 +17,8 @@ test("simulated session drives the rail without extra model calls", async () => 
   let branch: unknown[] = [];
   let rails: string[] = [];
   let footerCleared = false;
+  let footerDisposals = 0;
+  let component: { render: (width: number) => string[]; dispose?: () => void } | undefined;
   const commands = new Map<string, (args: string, ctx: ExtensionContext) => Promise<void>>();
   const theme = { fg: (_color: string, value: string) => value };
   const ctx = {
@@ -25,11 +27,14 @@ test("simulated session drives the rail without extra model calls", async () => 
       setStatus() {},
       setWidget() {},
       notify() {},
-      setFooter(factory?: (tui: { requestRender: () => void }, theme: { fg: (color: string, value: string) => string }, footerData: { onBranchChange?: (fn: () => void) => void }) => { render: (width: number) => string[] }) {
-        if (!factory) { footerCleared = true; rails = []; return; }
+      setFooter(factory?: (tui: { requestRender: () => void }, theme: { fg: (color: string, value: string) => string }, footerData: unknown) => { render: (width: number) => string[]; dispose?: () => void }) {
+        component?.dispose?.();
+        if (!factory) { footerCleared = true; rails = []; component = undefined; return; }
         footerCleared = false;
-        let component: { render: (width: number) => string[] } | undefined;
-        component = factory({ requestRender() { rails = component?.render(80) ?? []; } }, theme, {});
+        component = factory({ requestRender() { rails = component?.render(80) ?? []; } }, theme, {
+          getGitBranch: () => "main", getAvailableProviderCount: () => 1,
+          getExtensionStatuses: () => new Map(), onBranchChange: () => () => { footerDisposals++; },
+        });
         rails = component.render(80);
       },
     },
@@ -37,7 +42,8 @@ test("simulated session drives the rail without extra model calls", async () => 
       find: () => ({ id: "brief" }),
       complete: async () => { calls.push("model"); return { content: [{ type: "text", text: JSON.stringify({ goal: "Publish the npm package", done: "—", now: "Review", next: "—", blocked: "—", trace: [{ who: "user", kind: "task", text: "keep one job" }, { who: "agent", kind: "drift", text: "left the brief for publishing" }] }) }], stopReason: "stop", usage: { cost: { total: 0.001 } } }; },
     },
-    sessionManager: { getBranch: () => branch },
+    getContextUsage: () => ({ tokens: 0, contextWindow: 128_000, percent: 0 }),
+    sessionManager: { getBranch: () => branch, getEntries: () => branch, getCwd: () => home, getSessionName: () => undefined },
   } as unknown as ExtensionContext;
   extension({
     on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => void) => { handlers.set(name, handler); return () => {}; },
@@ -78,5 +84,10 @@ test("simulated session drives the rail without extra model calls", async () => 
   assert.match(rails.join("\n"), /Fix the brief line|add a right rail/);
   await commands.get("trace")?.("", ctx);
   assert.equal(footerCleared, true, "/trace restores the built-in status line");
+  assert.equal(footerDisposals, 1, "owned footer releases its branch listener");
   assert.equal(rails.join("").trim(), "");
+  ctx.ui.setFooter(() => ({ invalidate() {}, render: () => ["other extension footer"] }));
+  emit("session_start");
+  assert.equal(footerCleared, false, "a disabled trace does not clear another extension's footer");
+  assert.deepEqual(rails, ["other extension footer"]);
 });

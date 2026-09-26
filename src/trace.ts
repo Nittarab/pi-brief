@@ -1,3 +1,4 @@
+import { sliceByColumn, visibleWidth } from "@earendil-works/pi-tui";
 import { cleanText, visibleText, type Presented } from "./brief.ts";
 
 export type TraceUser = { id?: string; text: string };
@@ -159,12 +160,9 @@ export function railColor(line: string): "accent" | "thinkingText" | "error" | "
 }
 
 function clipLine(text: string, width: number): string {
-  if (text.length <= width) return text;
+  if (visibleWidth(text) <= width) return text;
   if (width <= 1) return "…";
-  const raw = text.slice(0, width - 1);
-  const space = raw.lastIndexOf(" ");
-  const base = space >= Math.ceil((width - 1) / 2) ? raw.slice(0, space) : raw.trimEnd();
-  return `${base || raw}…`;
+  return `${sliceByColumn(text, 0, width - 1, true)}…`;
 }
 
 function mark(icon: string, text: string, width: number): string {
@@ -173,7 +171,7 @@ function mark(icon: string, text: string, width: number): string {
 }
 
 export function renderRail(rail: Rail, width: number, height: number): string[] {
-  const columns = Math.max(4, Math.floor(width));
+  const columns = Math.max(1, Math.floor(width));
   const rows = Math.max(1, Math.floor(height));
   const presented = rail.presented ?? [];
   const header: string[] = [];

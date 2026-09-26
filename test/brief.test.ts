@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { BriefController, briefLine, cleanText, isBrief, parseBrief, parsePresented, promptFor, sessionOutline, type Brief } from "../src/brief.ts";
 
 const summary: Brief = { goal: "Ship brief", done: "Tests passed", now: "Documenting", next: "Publish", blocked: "—" };
@@ -44,11 +45,17 @@ test("brief line uses the row width and keeps both labels", () => {
   assert.equal(wide, `Goal: ${goal} · Now: ${now}`);
   assert.ok(goal.length > 22);
   const narrow = briefLine({ ...summary, goal, now }, "", 36);
-  assert.ok(narrow.length <= 36);
+  assert.ok(visibleWidth(narrow) <= 36);
+  assert.doesNotMatch(narrow, /\x1b/, "the plain brief remains safe to theme as one line");
   assert.match(narrow, /^Goal: /);
   assert.match(narrow, / · Now: /);
   assert.doesNotMatch(narrow, /so the ·/); // the old 22-character cut
-  assert.equal(briefLine(summary, "update failed", 12).length <= 12, true);
+  assert.ok(visibleWidth(briefLine(summary, "update failed", 12)) <= 12);
+  for (const text of ["修复中文字符的布局", "👩🏽‍💻 fix emoji", "e\u0301cho combining"]) {
+    for (const width of [1, 12, 36]) {
+      assert.ok(visibleWidth(briefLine({ ...summary, goal: text, now: text }, "", width)) <= width);
+    }
+  }
 });
 
 test("outline keeps the active trace and other branches, without tool arguments or output", () => {

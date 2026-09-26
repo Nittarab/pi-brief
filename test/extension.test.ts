@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 // Isolate configuration: never read the operator's actual ~/.pi/agent/brief.json.
@@ -105,7 +106,7 @@ test("widget shows the full task when the row is wide", () => {
   ]);
   h.emit("session_start");
   assert.match(shown(h.widgets, 140), /brief bar shows only once/);
-  assert.ok(shown(h.widgets, 36).length <= 36);
+  assert.ok(visibleWidth(shown(h.widgets, 36)) <= 36);
   assert.equal(h.statuses.at(-1)?.[1], undefined);
   h.emit("session_shutdown");
 });
@@ -267,6 +268,31 @@ test("the built-in default runs without a config file and file/env overrides win
   assert.deepEqual(env.modelLookups, ["test/brief"]);
   env.emit("session_shutdown");
   rmSync(join(directory, "brief.json"));
+});
+
+test("only the verified default gets the thinking-disable request option", async () => {
+  const branch = [{ type: "message", message: { role: "user", content: "Ship it" } }];
+  delete process.env.PI_BRIEF_MODEL;
+  const defaults = harness("tui", branch);
+  let defaultOptions: unknown;
+  defaults.setComplete(async (_model, _context, options) => { defaultOptions = options; return response; });
+  defaults.emit("session_start");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual((defaultOptions as { samplingParams?: unknown }).samplingParams,
+    { chat_template_kwargs: { enable_thinking: false } });
+  assert.ok((defaultOptions as { sessionId?: string }).sessionId);
+  defaults.emit("session_shutdown");
+
+  process.env.PI_BRIEF_MODEL = "test/alternate";
+  const other = harness("tui", branch);
+  let otherOptions: unknown;
+  other.setComplete(async (_model, _context, options) => { otherOptions = options; return response; });
+  other.emit("session_start");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal((otherOptions as { samplingParams?: unknown }).samplingParams, undefined);
+  assert.ok((otherOptions as { sessionId?: string }).sessionId);
+  other.emit("session_shutdown");
+  process.env.PI_BRIEF_MODEL = "test/brief";
 });
 
 test("users can disable the default; invalid config and missing models make no provider calls", () => {
