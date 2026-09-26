@@ -18,7 +18,7 @@ test("public agent excerpts stay on the issue, not the tool diary", async () => 
   const env = new BriefEnv(episodes);
   const observation = env.reset(0);
   assert.match(observation.outline, /Memset provider/);
-  assert.match(observation.outline, /assistant: To start solving/);
+  assert.match(JSON.parse(observation.outline).activity[0].text, /To start solving/);
   const oracle = await rollout(env, oraclePolicy);
   const bad = await rollout(new BriefEnv(loadPublicEpisodes(fixture)), badPolicy);
   assert.equal(oracle.mean, 1);

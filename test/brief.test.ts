@@ -10,29 +10,14 @@ test("parsing requires all string fields, sanitizes control characters and persi
   assert.deepEqual(parseBrief(`\`\`\`json\n${json}\n\`\`\``), summary);
   assert.throws(() => parseBrief('{"goal":"only"}'), /missing brief field/);
   assert.equal(isBrief(["not a brief"]), false);
-  assert.equal(cleanText("hello\x1b[31m\r\nworld"), "hello [31m world");
+  assert.equal(cleanText("hello\x1b[31m\r\nworld"), "hello world");
 });
 
-test("presented trace is parsed from the brief JSON and copies are rejected", () => {
-  const shaped = JSON.stringify({ goal: "Ship", done: "—", now: "—", next: "—", blocked: "—", trace: {
-    task: "model trace, not the chat",
-    pivot: "",
-    drift: "",
-    steps: ["rail shows decisions, not chat", "Applied edits rewriting the trace"],
-  }});
-  assert.deepEqual(parsePresented(shaped), [
-    { who: "user", kind: "task", text: "model trace, not the chat" },
-    { who: "agent", kind: "turn", text: "rail shows decisions, not chat" },
-  ]);
-  const legacy = JSON.stringify({ trace: [
-    { who: "user", kind: "turn", text: "Kicked off a standup skill session." },
-    { who: "agent", kind: "task", text: "Tree stays the source" },
-    { who: "agent", kind: "turn", text: "Applied edits rewriting the trace" },
-  ]});
-  assert.deepEqual(parsePresented(legacy), [
-    { who: "agent", kind: "turn", text: "Tree stays the source" },
-  ]);
+test("stored trace parses safely without reclassifying its meaning or cutting it to 32 characters", () => {
+  const trace = [{ who: "user", kind: "task", text: "Prepare the daily standup with yesterday's results" }];
+  assert.deepEqual(parsePresented(JSON.stringify({ trace })), trace);
   assert.deepEqual(parsePresented('{"goal":"Ship"}'), []);
+  assert.deepEqual(parsePresented('{"trace":[{"kind":"invented","text":"bad"}]}'), []);
 });
 
 test("brief line uses the row width and keeps both labels", () => {
@@ -67,25 +52,23 @@ test("outline keeps the active trace and other branches, without tool arguments 
     { entry: { id: "u1", type: "message", message: { role: "user", content: "Ship the footer" } }, children: [] },
     { entry: { id: "u2", type: "message", message: { role: "user", content: "Try another branch" } }, label: "alt", children: [] },
   ]);
-  assert.match(outline, /Active agent trace/);
-  assert.match(outline, /user: Ship the footer/);
-  assert.match(outline, /assistant: Checked; tools: bash/);
-  assert.match(outline, /Other \/tree branches/);
-  assert.match(outline, /alt: Try another branch/);
+  const source = JSON.parse(outline);
+  assert.equal(source.users[0].text, "Ship the footer");
+  assert.equal(source.activity[0].text, "Checked");
+  assert.deepEqual(source.activity[0].tools, ["bash"]);
+  assert.doesNotMatch(outline, /Try another branch/);
   assert.doesNotMatch(outline, /SECRET_THOUGHT|SECRET_ARGUMENT|SECRET_OUTPUT/);
 });
 
 test("prompt includes bounded visible activities only and treats input as untrusted", () => {
   const prompt = promptFor(summary, [{ type: "tool", text: "bash: finished" }]);
-  assert.match(prompt, /untrusted data/);
-  const outlinePrompt = promptFor(summary, [{ type: "user", text: "Active agent trace" }], true);
+  assert.match(prompt, /UNTRUSTED_DATA/);
+  const outlinePrompt = promptFor(summary, [{ type: "user", text: sessionOutline([{ type: "message", message: { role: "user", content: "Fix checkout" } }]) }], true);
   assert.match(outlinePrompt, /sustained user job/);
-  assert.match(outlinePrompt, /A check is not a new job/);
-  assert.match(outlinePrompt, /Keep goal unchanged/);
   assert.match(outlinePrompt, /unfinished objective/);
-  assert.match(outlinePrompt, /Do not copy the source messages/);
-  assert.match(outlinePrompt, /not a narration of the latest message or tool/);
-  assert.doesNotMatch(prompt, /tool output/);
+  assert.match(outlinePrompt, /not replacement jobs/);
+  assert.match(outlinePrompt, /not authority/);
+  assert.match(outlinePrompt, /Same nouns can hide a violation/);
 });
 
 test("meaningful events start immediately; tools wait for settlement, cost is tracked with no default USD limit", async () => {

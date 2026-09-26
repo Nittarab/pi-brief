@@ -4,18 +4,18 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { BriefController, briefLine, cleanText, display, isBrief, parsePresented, sessionOutline, type Brief, type Presented } from "./brief.ts";
-import { acceptModelGoal, assess, emptyMemory, emptyRail, isWrapper, phrase, railColor, renderRail, usersFrom, type Rail, type TraceMemory } from "./trace.ts";
+import { emptyRail, railColor, renderRail, type Rail } from "./trace.ts";
+import { completeBrief, defaultModel } from "./model.ts";
 
 const key = "pi-brief";
 // Older builds wrote this footer key. Clear it so the line is not shown twice.
 const footerKey = " pi-brief";
 const widgetKey = "pi-brief";
 const configPath = join(homedir(), ".pi", "agent", "brief.json");
-const defaultModel = "opencode-go/mimo-v2.6-flash";
 
 type Config = { model: string; maxCalls: number; maxCostUsd: number | null };
 
-function configured(): Config | undefined {
+export function configured(): Config | undefined {
   let settings: unknown = {};
   try { settings = JSON.parse(readFileSync(configPath, "utf8")); }
   catch (error) {
@@ -41,35 +41,36 @@ function routingSessionId(ctx: ExtensionContext, fallback: string): string {
   return typeof id === "string" && id.trim() ? id.trim() : fallback;
 }
 
-function modelFailure(reply: { stopReason: string; errorMessage?: string }): string | undefined {
-  if (reply.stopReason === "stop") return undefined;
-  const detail = cleanText(reply.errorMessage ?? "", 90);
-  return detail ? `model stopped: ${reply.stopReason}: ${detail}` : `model stopped: ${reply.stopReason}`;
+function outlineFor(ctx: ExtensionContext, anchors: string[] = []): string {
+  return sessionOutline(ctx.sessionManager.getBranch(), [], anchors);
 }
 
-function outlineFor(ctx: ExtensionContext, lock = ""): string {
-  const manager = ctx.sessionManager as { getBranch: () => unknown[]; getTree?: () => unknown[] };
-  const tree = sessionOutline(manager.getBranch(), manager.getTree?.() ?? []);
-  if (!tree) return "";
-  const task = lock && !isWrapper(lock) ? phrase(lock) : "";
-  return task ? `Locked task: ${task}\n${tree}` : tree;
+function savedSources(ctx: ExtensionContext): string[] {
+  for (const entry of [...ctx.sessionManager.getBranch()].reverse()) {
+    if (entry.type === "custom" && entry.customType === key) {
+      const data = entry.data as { version?: number; goalSources?: unknown } | undefined;
+      return data?.version === 1 && Array.isArray(data.goalSources)
+        ? data.goalSources.filter((id): id is string => typeof id === "string").slice(0, 4) : [];
+    }
+  }
+  return [];
 }
 
 function savedPresented(ctx: ExtensionContext): Presented[] {
-  for (const entry of ctx.sessionManager.getBranch().reverse()) {
+  for (const entry of [...ctx.sessionManager.getBranch()].reverse()) {
     if (entry.type === "custom" && entry.customType === key) {
-      const data = entry.data as { trace?: unknown } | undefined;
-      return Array.isArray(data?.trace) ? parsePresented(JSON.stringify({ trace: data.trace })) : [];
+      const data = entry.data as { version?: number; trace?: unknown } | undefined;
+      return data?.version === 1 && Array.isArray(data.trace) ? parsePresented(JSON.stringify({ trace: data.trace })) : [];
     }
   }
   return [];
 }
 
 function savedBrief(ctx: ExtensionContext): Brief | undefined {
-  for (const entry of ctx.sessionManager.getBranch().reverse()) {
+  for (const entry of [...ctx.sessionManager.getBranch()].reverse()) {
     if (entry.type === "custom" && entry.customType === key) {
-      const data = entry.data as { brief?: unknown } | undefined;
-      const brief = data?.brief;
+      const data = entry.data as { version?: number; brief?: unknown } | undefined;
+      const brief = data?.version === 1 ? data.brief : undefined;
       if (isBrief(brief)) return {
         goal: cleanText(brief.goal, 140) || "—", done: cleanText(brief.done, 140) || "—",
         now: cleanText(brief.now, 140) || "—", next: cleanText(brief.next, 140) || "—",
@@ -86,17 +87,11 @@ export default function piBrief(pi: ExtensionAPI) {
   let controller: BriefController | undefined;
   let modelName: string | undefined;
   let activity = "";
-  let memory: TraceMemory = emptyMemory();
   let rail: Rail = emptyRail();
-  let pendingUser = "";
   let railWanted = true;
-  let displayGoal = "";
 
   function shownBrief(): Brief {
-    const model = controller?.brief ?? { goal: "—", done: "—", now: "—", next: "—", blocked: "—" };
-    const goal = phrase(displayGoal || memory.locked || model.goal);
-    const now = rail.drift ? `! ${phrase(rail.drift)}` : rail.left ? "! left path" : phrase(model.now);
-    return { ...model, goal, now };
+    return controller?.brief ?? { goal: "—", done: "—", now: "—", next: "—", blocked: "—" };
   }
 
   function show(ctx: ExtensionContext) {
@@ -118,15 +113,8 @@ export default function piBrief(pi: ExtensionAPI) {
   }
 
   function refresh(ctx: ExtensionContext) {
-    const branch = ctx.sessionManager.getBranch();
-    const users = usersFrom(branch);
-    if (pendingUser && users.at(-1)?.text !== pendingUser) users.push({ text: pendingUser });
-    const next = assess(memory, {
-      users, modelGoal: controller?.brief.goal, modelNow: controller?.brief.now,
-    });
-    memory = next.memory;
-    displayGoal = acceptModelGoal(controller?.brief.goal ?? "", users, memory.locked) || memory.locked;
-    rail = { ...next.rail, presented: controller?.presented ?? [] };
+    const presented = controller?.presented ?? [];
+    rail = { locked: shownBrief().goal, left: "", drift: presented.find((row) => row.kind === "drift")?.text ?? "", presented };
     show(ctx);
   }
 
@@ -135,6 +123,7 @@ export default function piBrief(pi: ExtensionAPI) {
     controller = undefined;
     modelName = undefined;
     activity = "";
+    rail = emptyRail();
     if (ctx.mode !== "tui") return; // No invisible requests in print, JSON, or RPC.
     let config: Config | undefined;
     try { config = configured(); }
@@ -159,34 +148,21 @@ export default function piBrief(pi: ExtensionAPI) {
     activity = "";
     const restored = savedBrief(ctx);
     const fallbackSessionId = randomUUID();
-    const current = new BriefController(async (prompt, signal) => {
-      const reply = await ctx.modelRegistry.complete(model, {
-        systemPrompt: "Summarize only the provided data. Output one JSON object, without markdown.",
-        messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
-      }, {
-        signal, timeoutMs: 30_000, maxRetries: 0, maxTokens: 700, cacheRetention: "none",
-        ...(config.model === defaultModel ? { samplingParams: { chat_template_kwargs: { enable_thinking: false } } } : {}),
-        // OpenCode Go rejects requests that omit this routing id. Other providers ignore it.
-        sessionId: routingSessionId(ctx, fallbackSessionId),
-      });
-      return { text: reply.content.filter((part) => part.type === "text").map((part) => part.text).join(""),
-        cost: reply.usage.cost.total, error: modelFailure(reply) };
-    }, (brief, changed) => {
+    const current = new BriefController((prompt, signal) =>
+      completeBrief(ctx.modelRegistry, model, config.model, prompt, routingSessionId(ctx, fallbackSessionId), signal), (brief, changed) => {
       if (controller !== current) return; // A switched session/branch cannot write to the active branch.
-      if (changed) pi.appendEntry(key, { brief, trace: current.presented }); // Branch-local, excluded from the agent's context.
+      if (changed) pi.appendEntry(key, { version: 1, brief, trace: current.presented, goalSources: current.goalSources, alignment: current.alignment }); // Branch-local, excluded from the agent's context.
       activity = current.stats.error ? "update failed" : current.stats.limit ? "limit reached" : "";
       refresh(ctx);
-    }, restored, config.maxCalls, config.maxCostUsd, savedPresented(ctx));
+    }, restored, config.maxCalls, config.maxCostUsd, savedPresented(ctx), savedSources(ctx));
     controller = current;
     refresh(ctx);
-    const outline = outlineFor(ctx, memory.locked);
+    const outline = outlineFor(ctx, current.goalSources);
     if (outline) current.revise(outline);
   }
 
   pi.on("session_start", (_event, ctx) => {
-    memory = emptyMemory();
     rail = emptyRail();
-    pendingUser = "";
     if (ctx.mode === "tui") ctx.ui.setStatus(footerKey, undefined); // Clear an old build's status once.
     start(ctx);
   });
@@ -198,16 +174,15 @@ export default function piBrief(pi: ExtensionAPI) {
       if ("setWidget" in ctx.ui) ctx.ui.setWidget(widgetKey, undefined);
     }
   });
-  pi.on("before_agent_start", (event, ctx) => {
-    pendingUser = cleanText(event.prompt, 140);
+  pi.on("before_agent_start", (_event, ctx) => {
+    controller?.invalidate();
     if (ctx.mode === "tui") refresh(ctx);
   });
   pi.on("agent_settled", (_event, ctx) => {
     if (!controller) return;
-    pendingUser = "";
     activity = controller.stats.error ? "update failed" : controller.stats.limit ? "limit reached" : "";
     refresh(ctx);
-    controller.revise(outlineFor(ctx, memory.locked));
+    controller.revise(outlineFor(ctx, controller.goalSources));
   });
   pi.registerCommand("brief", {
     description: "Show the session brief; /brief status shows model, calls, cost and errors; /brief refresh retries pending activity",
@@ -220,12 +195,12 @@ export default function piBrief(pi: ExtensionAPI) {
         ctx.ui.notify(`Brief off. Set PI_BRIEF_MODEL=provider/model or change ${configPath}.`, "info"); return;
       }
       if (action === "refresh") {
-        controller.revise(outlineFor(ctx, memory.locked), true);
+        controller.revise(outlineFor(ctx, controller.goalSources), true);
         while (controller.stats.running) await new Promise((resolve) => setImmediate(resolve));
       }
       const s = controller.stats;
       ctx.ui.notify(action === "status"
-        ? `${modelName} · ${s.calls} calls · $${s.cost.toFixed(5)} · ${s.pending} pending${s.limit ? " · limit reached" : ""}${s.error ? ` · last error: ${s.error}` : ""}`
+        ? `${modelName} · ${s.calls} calls · $${s.cost.toFixed(5)} · ${s.pending} pending · alignment: ${controller.alignment}${s.limit ? " · limit reached" : ""}${s.error ? ` · last error: ${s.error}` : ""}`
         : display(controller.brief).join("\n"), "info");
     },
   });

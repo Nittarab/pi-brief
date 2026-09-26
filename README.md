@@ -1,14 +1,14 @@
 # pi-brief
 
-A compact, persistent **Goal + Now** session brief below Pi's editor, with a full five-field brief on demand. Personal open-source Pi extension by Nittarab for Pi 0.87.1; not a Weft plugin.
+A compact **Goal + Now** session brief below Pi's editor, with a five-field brief and optional trace. Personal open-source Pi extension by Nittarab for Pi 0.87.1; not a Weft plugin.
 
 ## Install
 
-Requires Pi 0.87.1 and Node.js 22.19+. Install the GitHub version with `pi install git:github.com/Nittarab/pi-brief`, or try a local checkout with `pi -e /absolute/path/to/pi-brief`. This package is not yet published on npm. It declares `pi.extensions: ["./src/index.ts"]` and the `pi-package` discovery keyword. Installing a Pi extension executes code with your user privileges: review the source first.
+Requires Pi 0.87.1 and Node.js 22.19+. Install with `pi install git:github.com/Nittarab/pi-brief`, or try a checkout with `pi -e /absolute/path/to/pi-brief`. This package is not published on npm. It declares `pi.extensions: ["./src/index.ts"]`. Extensions execute code with your user privileges: review the source first.
 
-**Automatic model calls:** The default is `opencode-go/mimo-v2.6-flash`, up to 80 calls per session/branch, with **no USD cap** (`maxCostUsd: null`). If that model is available and authenticated in Pi, pi-brief sends the bounded session outline to it after session activity, without a separate opt-in. If it is unavailable, the brief shows `off: model not found` and makes no request. Review [privacy and cost](#privacy-security-and-cost) before installing.
+**Automatic model calls:** the default is `opencode-go/mimo-v2.6-flash`, up to 80 calls per session/branch, with **no USD cap**. When that model is available and authenticated, the extension sends bounded session evidence after activity without separate opt-in. If unavailable, it shows `off: model not found` and makes no request. Review the privacy section before installation.
 
-To use a different model, set `PI_BRIEF_MODEL='provider/model-id'`, or create `~/.pi/agent/brief.json`:
+Set `PI_BRIEF_MODEL='provider/model-id'` or create `~/.pi/agent/brief.json`:
 
 ```json
 {
@@ -18,33 +18,84 @@ To use a different model, set `PI_BRIEF_MODEL='provider/model-id'`, or create `~
 }
 ```
 
-Use `{ "model": null }` in that file to disable model calls. The environment variable overrides the file's `model`; the file's optional limits still apply. Model names must be exact `provider/model-id` identifiers found in Pi's model registry; no automatic fallback to another model/provider. Configure authentication for the selected provider in Pi separately. Invalid configuration and missing models leave a visible **off/error** line instead of making requests. `maxCalls` is an optional positive integer (default 80 per session/branch). `maxCostUsd` defaults to `null` (no USD limit); set a finite positive number to stop after observed spend reaches it. Reported cost is tracked even with the USD limit off. No minimum request interval is configured. Calls and observed cost reset on session/branch navigation; the latest brief is restored from the active session branch.
+`{ "model": null }` disables calls. The environment variable overrides the file's model; file limits still apply. Model IDs must exist in Pi's registry. There is no provider fallback. Configure authentication through Pi. Invalid settings leave a visible error rather than making requests. `maxCalls` is a positive integer; `maxCostUsd` is null or a finite positive number.
 
 ## Use
 
-- One widget below the editor shows the locked user goal and Now. Pi's footer does not repeat it. The line uses the terminal width and cuts a field only when the row is too narrow. The first real user task locks the goal. A skill tag, a screenshot, or a bare file path does not. A check question does not replace it. The model may refine the shown goal only when a later user message adds a requirement. A later user message moves that lock only when it is an explicit new task (`instead`, `new task`, `forget that`, and the same kind of phrase). The model cannot move the lock. If the model goal or Now leaves the lock, the line shows `!` and the old goal stays. It also reports when disabled, an update failed, or a limit was reached.
-- `/trace` adds or removes short trace rows in the same widget, above Pi's original status line. It does not cover the chat or replace the footer. `/trace` again leaves only the Goal + Now line. The session tree is the source. The same `/brief` call returns a trace object: current task, pivot, drift, and up to four decisions. The extension sets the marks. The model does not. Diary lines are dropped. `●` is the current task. `◇` is a decision. `!` is a pivot or drift. `↩` is a branch switch. Until the model answers, the trace says `reading`.
-- `/brief` displays Goal, Done, Now, Next, and Blocked. The summary reads the `/tree` shape and the active agent trace: user prompts, visible assistant text, and tool names. It does not read tool arguments, tool output, or thinking. Goal stays the same unless the active branch shows that the user changed the task. Other branches are alternatives, not the current task. The model is instructed to mark Done only for verified progress; the brief can still be inaccurate. Check important facts yourself.
-- `/brief status` displays selected model, request count, reported USD cost, pending activity, limit state, and last error.
-- `/brief refresh` processes pending activity (or retries a failed update) subject to the same limits. It does not spend on an empty queue.
+- **Goal + Now** shows the last accepted brief. Before the first model result it shows `—`, not a guessed task. It is not repeated in Pi's footer.
+- **`/trace`**, **`/trace on`**, **`/trace off`** control the trace in the same widget. `●` is the goal, `◇` a decision or reported result, and `!` a user pivot or agent drift. The widget uses at most seven lines and preserves the task and warning before less important decisions.
+- **`/brief`** shows Goal, Done, Now, Next and Blocked.
+- **`/brief status`** shows model, calls, reported USD cost, pending work, alignment and errors.
+- **`/brief refresh`** retries a failed update or processes changed evidence. It does not spend again on an unchanged successful snapshot or an empty branch.
 
-In a source checkout, an RL environment in `src/rl/` scores a brief against synthetic sessions. `node --experimental-transform-types scripts/rl-rollout.mjs` compares an oracle policy with a bad standup policy. It does not call a model. Add `--model` to score the live prompt. That spends model calls. The brief call disables model thinking only for the verified default MiMo model so the JSON is returned; other configured models receive provider-neutral options. A long reasoning trace was consuming the token budget and leaving the rail empty. `npm test` covers the environment without a model call. `scripts/rl-rollout.mjs --model --public` scores eight short excerpts from the Nebius SWE-agent trajectories dataset (CC-BY-4.0). The full trajectories are not stored here.
+A goal follows the user's sustained outcome, including later requirements and prohibitions. Checks and acknowledgements do not replace it. A clear new task can replace it without saying a special keyword. A change of method is not a new task.
 
-The brief and optional trace share one `belowEditor` widget. Pi draws its original footer, including the path, model, token usage, and other extensions' status text. The widget uses at most seven of Pi's ten allowed widget lines and fits the terminal width. In print/JSON/RPC modes the extension performs no summarization or UI updates.
+Drift is a **model judgment**, not a word-overlap score. Necessary investigation, tests and approval waits can be aligned even when their words differ from the goal. Work with the same nouns can still violate a constraint. Alignment can be `unknown`: tool names alone do not prove what the agent is doing. The extension checks that goal/pivot citations refer to user messages and drift citations refer to visible assistant text on the active branch. **Valid citations prove provenance, not that the judgment is correct.** Check important claims yourself.
 
-## Privacy, security, and cost
+Done is prefixed with **Reported:**. The extension does not see test output and cannot independently verify completion. An assistant's plan is not a result.
 
-**The installed extension is enabled by default when its model is available. Change the model or disable it before running Pi if you do not trust the default provider or do not want automatic model calls.** This sends a bounded outline of the session tree and active agent trace: user prompts, visible assistant text, tool names, the previous brief, and the Pi session id. It does not send tool arguments, tool output, or thinking. OpenCode Go requires the session id as `x-opencode-session`; other providers may ignore it. It never sends raw tool arguments, raw tool output, or assistant thinking. However prompts/visible answers and the stored brief **can themselves include secrets or sensitive content**: the instruction to omit secrets is not a redaction guarantee. Do not enable this for sensitive sessions unless you accept disclosure to your chosen provider. Pi session files store generated briefs as branch-local custom entries; protect session files accordingly. Untrusted prompt content is labeled as data, but model output can still be inaccurate or adversarial. This extension does not change the agent's context or insert the brief into it.
+## Evidence and lifecycle
 
-Model requests use at most 700 output tokens, a 30-second timeout, zero transport retries, and one in-flight request at a time. There is no timer. A summary runs after the agent settles, or when you change the active `/tree` branch, and only if that outline differs from the last summary. A failed response does not silently retry; `/brief refresh` permits another attempt. The call limit is strict; the optional USD limit checks **reported cost after each call**: a single call can exceed the remaining budget, and provider exceptions/timeouts may bill without returning usage. With `maxCostUsd: null`, spend is tracked but never capped by this extension. Prices, reported usage and USD units depend on the provider; an enabled USD limit is a soft ceiling, **not a guaranteed spending cap**. The default model can incur cost whenever there is activity to summarize and the provider is available; no explicit configuration is required. A stale in-flight reply is discarded after session/branch changes; its provider may nevertheless charge for work already sent.
+The data path is `active branch → bounded evidence → shared prompt/model call → validated judgment → branch-local entry and widget`.
 
-## Development
+- `src/evidence.ts` keeps user requests separate from recent activity, with stable entry IDs and original order. It retains the first three user records, up to four cited goal anchors, and recent requests, up to 12 users total. Recent visible assistant text has its own budget so a tool burst does not remove user intent.
+- User text starts with a 1,600-character limit; assistant text with 900. Oversized records retain both ends and a truncation marker. The serialized evidence is capped at 24,000 characters, including JSON escaping. Omitted and truncated record counts travel with the evidence. Missing middle content can still contain important constraints; this remains a limitation, not proof of alignment or drift.
+- Skill expansion bodies are removed, but a request outside the wrapper remains. Other tree branches, thinking, raw tool arguments and raw tool results are excluded. Tool names and error flags are metadata, not result proof.
+- `src/judgment.ts` owns one prompt and validates shape, source roles and citations. There are no topic blacklists, noun-overlap thresholds or model-written alternative task labels. The trace task is derived from the accepted goal.
+- `src/model.ts` owns request options for both the extension and live evaluation. One call, 700 output tokens, 30-second timeout, zero retries. Only the verified default MiMo model receives the thinking-disable option; alternatives use provider-neutral options.
+- A call runs after settlement or branch navigation, not on each tool event. One request is in flight. A later user turn invalidates its result. Branch/session navigation closes it and restores only the selected branch. Empty trace updates clear old warnings. Old ungrounded stored briefs are not restored; the active branch is summarized again.
+- Failures retain the last accepted brief, show an error and do not silently retry. Call limits are strict. Observed cost includes malformed and superseded replies when usage is returned. There is no timer. Print, JSON and RPC modes make no summarization calls or widget updates.
+
+## Privacy, security and cost
+
+**The extension is enabled by default when its model is available. Disable or change the model before using Pi if you do not trust that provider or do not want automatic calls.**
+
+Evidence contains user prompts, visible assistant text, tool names/error flags, the previous brief and the Pi session ID. OpenCode Go requires the session ID for routing. It never sends raw tool arguments, raw tool output or thinking. Prompts and visible answers can themselves contain secrets. The model's instruction to omit secrets is **not a redaction guarantee**. Do not enable this for sensitive sessions unless you accept disclosure to the selected provider. The larger evidence budget sends more visible text than earlier versions.
+
+Generated briefs, trace rows and source IDs are stored as custom session entries, excluded from the agent's context. Protect those files. Untrusted content is encoded as data and citations are checked, but semantic hallucinations and prompt injection remain possible. The extension does not steer the main agent or insert its brief into the agent's context.
+
+The optional USD limit is checked against **reported cost after each call**. One call can exceed the remaining limit. Timeouts and provider exceptions can bill without returning usage. This is a soft ceiling, not a guaranteed spending cap. With `maxCostUsd: null`, spend is tracked but not capped. Limits reset on branch/session navigation. Aborted calls may still bill.
+
+## Tests and LLM judging
 
 ```sh
-npm install
+npm ci --ignore-scripts
 npm run check
 npm test
 npm pack --dry-run
 ```
 
-MIT licensed. No account, network service, or telemetry is provided by this extension beyond calls to your selected Pi model provider.
+Unit and extension-harness tests cover evidence bounds/privacy, citations, branch restoration, superseded replies, warning clearing, headless behavior and cost limits. They do **not** establish live model accuracy.
+
+`test/fixtures/judgment-cases.json` contains 12 synthetic acceptance cases. Their natural-language references are fixed before a candidate run. References are withheld from the summarizer. Judge packets include the original, untruncated fixture so the judge can detect information lost by the pipeline. This corpus is a regression set, not an independent generalization benchmark.
+
+Offline requests (no model call):
+
+```sh
+node --experimental-transform-types scripts/goal-eval.mjs --output /tmp/brief-requests.json
+```
+
+An **approved** live run uses the configured Pi model and the same adapter as the extension. Both budgets and an output path are required:
+
+```sh
+node --experimental-transform-types scripts/goal-eval.mjs --live \
+  --max-calls 12 --max-cost-usd 0.25 --output /tmp/brief-candidates.json
+```
+
+This command spends money; the example is not authorization. It runs sequentially, saves each response and stops on provider failure without retry. The USD ceiling is post-call. If a limit stops the run early, missing cases cannot pass.
+
+Make a blind packet for an independent LLM judge, then validate its returned JSON array:
+
+```sh
+node --experimental-transform-types scripts/goal-eval.mjs \
+  --candidates /tmp/brief-candidates.json --output /tmp/brief-judge-packet.json
+# Give the packet's rubric and cases to a separate LLM; save its verdict array.
+node --experimental-transform-types scripts/goal-eval.mjs \
+  --candidates /tmp/brief-candidates.json --judge /tmp/brief-verdicts.json
+```
+
+The judge scores goal fidelity, constraints, alignment and progress (0/1/2), with source-cited reasons. The gate requires all four scores to be 2 for every case. Missing cases, bad model replies, incomplete scores and stale source/output fingerprints fail closed. Model/version labels are hidden from the judge. Valid JSON and shared keywords alone do not pass. Use separate training and held-out cases for further prompt tuning; do not report this small synthetic set as universal accuracy.
+
+The older `src/rl/` keyword environment remains only as an offline smoke/control test, including eight CC-BY-4.0 Nebius SWE-agent excerpts. `scripts/rl-rollout.mjs --public` runs it without a model. Its oracle score measures its hand-authored keyword rules, **not model quality**; `--model` now refuses and points to the semantic evaluation above.
+
+MIT licensed. No network service or telemetry beyond calls to the selected Pi provider.

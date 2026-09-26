@@ -3,329 +3,181 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { visibleWidth } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-// Isolate configuration: never read the operator's actual ~/.pi/agent/brief.json.
 const home = mkdtempSync(join(tmpdir(), "pi-brief-test-"));
 process.env.HOME = home;
 process.env.PI_BRIEF_MODEL = "test/brief";
-after(() => { rmSync(home, { recursive: true, force: true }); });
+after(() => rmSync(home, { recursive: true, force: true }));
 const { default: extension } = await import("../src/index.ts");
-const brief = { goal: "Ship", done: "Checked", now: "Review", next: "Release", blocked: "—" };
-const response = { content: [{ type: "text", text: JSON.stringify(brief) }], stopReason: "stop", usage: { cost: { total: 0.001 } } };
-
+const user = (text = "Fix checkout", id = "u1") => ({ id, type: "message", message: { role: "user", content: text } });
+const assistant = (text = "I am investigating checkout", id = "a1") => ({ id, type: "message", message: { role: "assistant", content: text } });
+const brief = { goal: "Fix checkout", done: "—", now: "Investigate checkout", next: "—", blocked: "—" };
+const value = { ...brief, alignment: "aligned", evidence: { goal: ["u1"], pivot: [], drift: [] }, trace: { pivot: "", drift: "", steps: [] } };
+function response(data: unknown = value, stopReason = "stop") {
+  return { content: [{ type: "text", text: JSON.stringify(data) }], stopReason, usage: { cost: { total: 0.001 } }, errorMessage: "" };
+}
+type Widget = ((tui: unknown, theme: { fg: (color: string, value: string) => string }) => { render: (width: number) => string[] }) | undefined;
 type Handler = (event: any, ctx: ExtensionContext) => void;
 function harness(mode = "tui", initial: unknown[] = []) {
   const handlers = new Map<string, Handler>();
-  const statuses: Array<[string, string | undefined]> = [];
-  const widgets: Array<[string, Widget]> = [];
-  const placements: string[] = [];
-  const notifications: string[] = [];
-  const entries: unknown[] = [];
-  let branch = initial;
-  let calls = 0;
-  const modelLookups: string[] = [];
-  let complete = async (_model: unknown, _context: unknown, _options: unknown): Promise<typeof response> => response;
+  const statuses: unknown[] = [], entries: any[] = [], notifications: string[] = [], placements: string[] = [], lookups: string[] = [];
+  let branch = initial, calls = 0, widget: Widget;
+  let complete = async (_model: unknown, _context: unknown, _options: unknown) => response();
   const commands = new Map<string, (args: string) => Promise<void>>();
   const ctx = {
     mode,
-    ui: { setStatus: (key: string, text: string | undefined) => statuses.push([key, text]),
-      setWidget: (key: string, content: Widget, options?: { placement?: string }) => {
-        widgets.push([key, content]);
-        if (content) placements.push(options?.placement ?? "");
-      },
+    ui: { setStatus: (...args: unknown[]) => statuses.push(args),
+      setWidget: (_key: string, content: Widget, options?: { placement?: string }) => { widget = content; if (content) placements.push(options?.placement ?? ""); },
       notify: (text: string) => notifications.push(text) },
     modelRegistry: { find: (provider: string, model: string) => {
-      modelLookups.push(`${provider}/${model}`);
+      lookups.push(`${provider}/${model}`);
       return ["test/brief", "test/alternate", "opencode-go/mimo-v2.6-flash"].includes(`${provider}/${model}`) ? { id: model } : undefined;
     }, complete: (...args: [unknown, unknown, unknown]) => { calls++; return complete(...args); } },
-    sessionManager: { getBranch: () => [...branch] },
+    sessionManager: { getBranch: () => branch, getSessionId: () => "session-123" },
   } as unknown as ExtensionContext;
   extension({ on: (name: string, handler: Handler) => { handlers.set(name, handler); return () => {}; },
     appendEntry: (_key: string, data: unknown) => entries.push(data),
-    registerCommand: (name: string, options: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) => {
-      commands.set(name, (args: string) => options.handler(args, ctx));
-    },
+    registerCommand: (name: string, options: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) => commands.set(name, (args) => options.handler(args, ctx)),
   } as unknown as ExtensionAPI);
-  const emit = (name: string, event: unknown = {}) => handlers.get(name)?.(event, ctx);
-  return { ctx, emit, statuses, widgets, placements, notifications, entries, modelLookups, command: (args: string, name = "brief") => {
-    const run = commands.get(name);
-    if (!run) throw new Error(`missing command ${name}`);
-    return run(args);
-  },
-    get calls() { return calls; }, setComplete: (fn: typeof complete) => { complete = fn; }, setBranch: (next: unknown[]) => { branch = next; } };
+  return { ctx, statuses, entries, notifications, placements, lookups,
+    emit: (name: string, event: unknown = {}) => handlers.get(name)?.(event, ctx),
+    command: (args = "", name = "brief") => commands.get(name)!(args),
+    get calls() { return calls; }, lines: (width = 160) => widget?.({}, { fg: (_color, text) => text }).render(width) ?? [],
+    setBranch: (next: unknown[]) => { branch = next; }, setComplete: (fn: typeof complete) => { complete = fn; } };
 }
+const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-type Widget = string[] | ((tui: unknown, theme: { fg: (color: string, value: string) => string }) => { render: (width: number) => string[] }) | undefined;
-
-function shown(widgets: Array<[string, Widget]>, width = 160): string {
-  const content = widgets.at(-1)?.[1];
-  if (Array.isArray(content)) return content[0] ?? "";
-  if (typeof content === "function") return content({}, { fg: (_color, value) => value }).render(width)[0] ?? "";
-  return "";
-}
-
-test("brief stays below the editor through work and idle; only metadata and visible text reach summarizer", async () => {
-  const h = harness();
-  let prompt = "";
-  h.setComplete(async (_model, context) => { prompt = JSON.stringify(context); return response; });
+test("default path uses structured private evidence and one accepted goal in widget, /brief and persistence", async () => {
+  const h = harness(); let prompt = "";
+  h.setComplete(async (_model, context) => { prompt = JSON.stringify(context); return response(); });
   h.emit("session_start");
+  assert.match(h.lines()[0]!, /Goal: —/);
+  h.emit("before_agent_start", { prompt: "Fix checkout" });
+  h.emit("tool_execution_start", { toolName: "bash", args: { password: "SECRET_ARGUMENT" } });
+  assert.equal(h.calls, 0);
+  h.setBranch([user(), assistant(), { id: "t1", type: "message", message: { role: "toolResult", toolName: "bash", content: "SECRET_OUTPUT" } },
+    { id: "a2", type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "SECRET_THOUGHT" }] } }]);
+  h.emit("agent_settled"); await tick();
+  assert.equal(h.calls, 1);
+  assert.doesNotMatch(prompt, /SECRET_/);
+  assert.match(prompt, /sustained user job/);
+  assert.equal(h.lines()[0], "Goal: Fix checkout · Now: Investigate checkout");
   assert.equal(h.placements.at(-1), "belowEditor");
-  assert.match(shown(h.widgets), /Goal: — · Now: —/);
-  assert.equal(h.statuses.at(-1)?.[1], undefined, "footer does not repeat the brief");
-  h.emit("before_agent_start", { prompt: "ship it" });
-  h.emit("tool_execution_start", { toolName: "bash", args: { password: "SENSITIVE_ARGUMENT" } });
-  h.emit("tool_execution_end", { toolName: "bash", isError: false, result: "SENSITIVE_OUTPUT" });
-  h.emit("message_end", { message: { role: "assistant", content: [{ type: "thinking", thinking: "SENSITIVE_THOUGHT" }, { type: "text", text: "Checked" }] } });
-  assert.equal(h.calls, 0, "tool events and the prompt do not start paid calls");
-  assert.match(shown(h.widgets), /Goal: ship it/);
-  assert.equal(h.statuses.at(-1)?.[1], undefined);
-  h.setBranch([
-    { id: "u1", type: "message", message: { role: "user", content: [{ type: "text", text: "ship it" }] } },
-    { id: "a1", type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "SENSITIVE_THOUGHT" }, { type: "text", text: "Checked" }, { type: "toolCall", name: "bash", arguments: { password: "SENSITIVE_ARGUMENT" } }] } },
-    { id: "t1", type: "message", message: { role: "toolResult", content: [{ type: "text", text: "SENSITIVE_OUTPUT" }] } },
-  ]);
-  h.emit("agent_settled");
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(h.calls, 1);
-  assert.doesNotMatch(prompt, /SENSITIVE_ARGUMENT|SENSITIVE_OUTPUT|SENSITIVE_THOUGHT/);
-  assert.match(prompt, /Checked/);
-  assert.match(prompt, /Keep goal unchanged/);
-  assert.match(shown(h.widgets), /Goal: ship it · Now: Review/);
-  assert.equal(h.statuses.at(-1)?.[1], undefined);
-  assert.deepEqual(h.entries, [{ brief, trace: [] }]);
-  await h.command("status");
-  assert.match(h.notifications.at(-1) ?? "", /test\/brief · 1 calls · \$0\.00100/);
-  await h.command("");
-  assert.match(h.notifications.at(-1) ?? "", /Goal: Ship[\s\S]*Blocked: —/);
-  h.emit("session_shutdown");
-  assert.deepEqual(h.statuses.at(-1), [" pi-brief", undefined]);
-  assert.deepEqual(h.widgets.at(-1), ["pi-brief", undefined]);
+  assert.deepEqual(h.entries[0].brief, brief);
+  assert.deepEqual(h.entries[0].goalSources, ["u1"]);
+  assert.equal(h.entries[0].version, 1);
+  await h.command(); assert.match(h.notifications.at(-1)!, /Goal: Fix checkout/);
+  await h.command("status"); assert.match(h.notifications.at(-1)!, /1 calls.*\$0.00100.*alignment: aligned/);
+  h.emit("agent_settled"); await tick(); assert.equal(h.calls, 1);
+  await h.command("refresh"); assert.equal(h.calls, 1, "empty refresh does not spend");
+  await h.command("off", "trace"); assert.equal(h.lines().length, 1);
+  await h.command("on", "trace"); assert.ok(h.lines().length > 1);
+  h.emit("session_shutdown"); assert.deepEqual(h.lines(), []);
 });
 
-test("widget shows the full task when the row is wide", () => {
-  const goal = "Fix pi-bref TUI so the brief bar shows only once";
-  const h = harness("tui", [
-    { type: "custom", customType: "pi-brief", data: { brief: { ...brief, goal, now: "Judge the screenshot" } } },
-  ]);
-  h.emit("session_start");
-  assert.match(shown(h.widgets, 140), /brief bar shows only once/);
-  assert.ok(visibleWidth(shown(h.widgets, 36)) <= 36);
-  assert.equal(h.statuses.at(-1)?.[1], undefined);
-  h.emit("session_shutdown");
-});
-
-test("tool activity does not replace the stable Goal and Now line", async () => {
-  const h = harness("tui", [
-    { id: "u1", type: "message", message: { role: "user", content: "Ship" } },
-    { type: "custom", customType: "pi-brief", data: { brief } },
-  ]);
-  h.emit("session_start");
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  h.emit("tool_execution_start", { toolName: "bash" });
-  assert.match(shown(h.widgets), /Goal: Ship · Now: Review/);
-  assert.equal(h.statuses.at(-1)?.[1], undefined);
-  assert.equal(h.calls, 1, "startup reads the current trace once");
-  h.emit("agent_settled");
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(h.calls, 1, "the same trace does not start another call");
-  h.emit("session_shutdown");
-});
-
-test("startup summarizes recent visible text and shows the same line below the editor", async () => {
-  const h = harness("tui", [
-    { type: "message", message: { role: "user", content: [{ type: "text", text: "Ship the footer" }] } },
-    { type: "message", message: { role: "assistant", content: [{ type: "text", text: "Footer is visible" }, { type: "thinking", thinking: "SECRET_THOUGHT" }] } },
-    { type: "message", message: { role: "toolResult", content: [{ type: "text", text: "SECRET_TOOL" }] } },
-  ]);
-  let prompt = "";
-  h.setComplete(async (_model, context) => { prompt = JSON.stringify(context); return response; });
-  h.emit("session_start");
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(h.calls, 1);
-  assert.match(prompt, /Ship the footer/);
-  assert.match(prompt, /Footer is visible/);
-  assert.doesNotMatch(prompt, /SECRET_THOUGHT|SECRET_TOOL/);
-  assert.match(shown(h.widgets), /Goal: Ship the footer · Now: Review/);
-  assert.equal(h.statuses.at(-1)?.[1], undefined);
-  h.emit("session_shutdown");
-  assert.deepEqual(h.widgets.at(-1), ["pi-brief", undefined]);
-});
-
-test("forwards the Pi session id on every summary request", async () => {
-  const h = harness();
-  (h.ctx.sessionManager as { getSessionId?: () => string }).getSessionId = () => "session-123";
-  let sessionId = "";
-  h.setComplete(async (_model, _context, options) => {
-    sessionId = (options as { sessionId?: string }).sessionId ?? "";
-    return response;
-  });
-  h.setBranch([{ type: "message", message: { role: "user", content: "ship it" } }]);
-  h.emit("session_start");
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(sessionId, "session-123");
-  h.emit("session_shutdown");
-});
-
-test("shows the provider error instead of only the stop reason", async () => {
-  const h = harness();
-  h.setComplete(async () => ({ ...response, stopReason: "error", errorMessage: "400 MissingSessionID" }));
-  h.setBranch([{ type: "message", message: { role: "user", content: "work" } }]);
-  h.emit("session_start");
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  await h.command("status");
-  assert.match(h.notifications.at(-1) ?? "", /last error: model stopped: error: 400 MissingSessionID/);
-  h.emit("session_shutdown");
-});
-
-test("failed summary stays visible below the editor after agent settles", async () => {
-  const h = harness();
-  let attempts = 0;
-  h.setComplete(async () => { attempts++; return { ...response, stopReason: "error" }; });
-  h.setBranch([{ type: "message", message: { role: "user", content: "work" } }]);
-  h.emit("session_start");
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  h.emit("agent_settled");
-  assert.match(shown(h.widgets), /Brief · update failed/);
-  assert.equal(h.statuses.at(-1)?.[1], undefined);
-  h.emit("agent_settled");
-  assert.match(shown(h.widgets), /update failed/);
-  await h.command("status");
-  assert.match(h.notifications.at(-1) ?? "", /last error: model stopped: error/);
-  assert.equal(attempts, 1);
-  h.emit("session_shutdown");
-});
-
-test("restores active branch, discards in-flight replies from abandoned branches", async () => {
-  const h = harness("tui", [
-    { id: "u1", type: "message", message: { role: "user", content: "old branch" } },
-    { type: "custom", customType: "pi-brief", data: { brief } },
-  ]);
-  let resolve!: (value: typeof response) => void;
+test("branch switch drops the abandoned task and its late response; does not mutate the manager's branch", async () => {
+  const original = [user(), assistant()];
+  const h = harness("tui", original);
+  let resolve!: (value: ReturnType<typeof response>) => void;
   h.setComplete(async () => new Promise((r) => { resolve = r; }));
+  h.emit("session_start"); assert.equal(h.calls, 1);
+  assert.equal(original[0]?.message.role, "user");
+  h.setBranch([]); h.emit("session_tree");
+  assert.match(h.lines()[0]!, /Goal: —/);
+  resolve(response()); await tick(); assert.equal(h.entries.length, 0);
+  h.emit("session_shutdown");
+});
+
+test("new user input invalidates an in-flight reply before settlement and preserves latest request tail", async () => {
+  const h = harness("tui", [user(), assistant()]);
+  const resolvers: Array<(reply: ReturnType<typeof response>) => void> = [];
+  const prompts: string[] = [];
+  h.setComplete(async (_model, context) => { prompts.push(JSON.stringify(context)); return new Promise((r) => resolvers.push(r)); });
   h.emit("session_start");
-  assert.match(shown(h.widgets), /Goal: old branch/);
-  assert.equal(h.calls, 1);
-  h.setBranch([]);
-  h.emit("session_tree");
-  assert.match(shown(h.widgets), /Goal: old branch/);
-  assert.match(shown(h.widgets), /left path/);
-  assert.equal(h.statuses.at(-1)?.[1], undefined);
-  resolve(response);
-  await new Promise<void>((resolve) => setImmediate(resolve));
+  h.emit("before_agent_start", { prompt: "New task: prepare standup" });
+  h.setBranch([user(), assistant(), user("Background ".repeat(300) + "New task: prepare standup, do not deploy", "u2")]);
+  h.emit("agent_settled");
+  resolvers[0]!(response()); await tick();
   assert.equal(h.entries.length, 0);
-  h.emit("session_shutdown");
-});
-
-test("no hidden completion or footer in headless modes", async () => {
-  for (const mode of ["print", "json", "rpc"]) {
-    const h = harness(mode);
-    h.emit("session_start");
-    h.emit("before_agent_start", { prompt: "request" });
-    h.emit("agent_settled");
-    await h.command("refresh");
-    assert.equal(h.calls, 0);
-    assert.deepEqual(h.statuses, []);
-    assert.deepEqual(h.widgets, []);
-  }
-});
-
-test("configuration accepts nullable USD limit and rejects invalid limits without provider calls", async () => {
-  const directory = join(home, ".pi", "agent");
-  mkdirSync(directory, { recursive: true });
-  writeFileSync(join(directory, "brief.json"), JSON.stringify({ model: "test/brief", maxCostUsd: null, maxCalls: 2 }));
-  const h = harness();
-  h.emit("session_start");
-  for (const prompt of ["first", "second", "third"]) {
-    h.setBranch([{ type: "message", message: { role: "user", content: prompt } }]);
-    h.emit("agent_settled");
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
   assert.equal(h.calls, 2);
-  await h.command("status");
-  assert.match(h.notifications.at(-1) ?? "", /\$0\.00200.*limit reached/);
+  assert.match(prompts[1]!, /prepare standup, do not deploy/);
+  resolvers[1]!(response({ ...value, goal: "Prepare standup without deployment", alignment: "unknown", evidence: { goal: ["u2"], pivot: ["u2"], drift: [] }, trace: { pivot: "Prepare standup", drift: "", steps: [] } }));
+  await tick(); assert.equal(h.entries.length, 1);
+  assert.match(h.lines()[0]!, /Goal: Prepare standup without deployment/);
+  await h.command("status"); assert.match(h.notifications.at(-1)!, /\$0.00200/);
   h.emit("session_shutdown");
-  rmSync(join(directory, "brief.json"));
 });
 
-test("the built-in default runs without a config file and file/env overrides win", async () => {
-  const directory = join(home, ".pi", "agent");
-  mkdirSync(directory, { recursive: true });
-  delete process.env.PI_BRIEF_MODEL;
-  const initial = [{ type: "message", message: { role: "user", content: "Ship it" } }];
-  const defaults = harness("tui", initial);
-  defaults.emit("session_start");
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.deepEqual(defaults.modelLookups, ["opencode-go/mimo-v2.6-flash"]);
-  assert.equal(defaults.calls, 1);
-  defaults.emit("session_shutdown");
-
-  writeFileSync(join(directory, "brief.json"), JSON.stringify({ model: "test/alternate" }));
-  const file = harness();
-  file.emit("session_start");
-  assert.deepEqual(file.modelLookups, ["test/alternate"]);
-  file.emit("session_shutdown");
-
-  process.env.PI_BRIEF_MODEL = "test/brief";
-  const env = harness();
-  env.emit("session_start");
-  assert.deepEqual(env.modelLookups, ["test/brief"]);
-  env.emit("session_shutdown");
-  rmSync(join(directory, "brief.json"));
+test("invalid provenance is visible, counted and not auto-retried; explicit refresh recovers", async () => {
+  const h = harness("tui", [user(), assistant()]);
+  h.setComplete(async () => response({ ...value, evidence: { goal: ["foreign-branch"], pivot: [], drift: [] } }));
+  h.emit("session_start"); await tick();
+  assert.match(h.lines()[0]!, /update failed/);
+  h.emit("agent_settled"); await tick(); assert.equal(h.calls, 1);
+  await h.command("status"); assert.match(h.notifications.at(-1)!, /goal evidence/);
+  assert.equal(h.entries.length, 0);
+  h.setComplete(async () => response()); await h.command("refresh");
+  assert.equal(h.calls, 2); assert.match(h.lines()[0]!, /Goal: Fix checkout/);
+  h.emit("session_shutdown");
 });
 
-test("only the verified default gets the thinking-disable request option", async () => {
-  const branch = [{ type: "message", message: { role: "user", content: "Ship it" } }];
-  delete process.env.PI_BRIEF_MODEL;
-  const defaults = harness("tui", branch);
-  let defaultOptions: unknown;
-  defaults.setComplete(async (_model, _context, options) => { defaultOptions = options; return response; });
-  defaults.emit("session_start");
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.deepEqual((defaultOptions as { samplingParams?: unknown }).samplingParams,
-    { chat_template_kwargs: { enable_thinking: false } });
-  assert.ok((defaultOptions as { sessionId?: string }).sessionId);
-  defaults.emit("session_shutdown");
+test("empty trace clears prior drift; legacy ungrounded stored brief is not restored", async () => {
+  const h = harness("tui", [user(), assistant(), { type: "custom", customType: "pi-brief", data: { brief: { ...brief, goal: "OLD WRONG GOAL" } } }]);
+  h.setComplete(async () => response({ ...value, alignment: "drifting", evidence: { goal: ["u1"], pivot: [], drift: ["a1"] }, trace: { pivot: "", drift: "Unrequested deployment", steps: [] } }));
+  h.emit("session_start"); assert.doesNotMatch(h.lines()[0]!, /OLD WRONG GOAL/); await tick();
+  assert.match(h.lines().join("\n"), /! Unrequested deployment/);
+  h.setBranch([user(), assistant(), assistant("I will fix checkout locally", "a2")]);
+  h.setComplete(async () => response()); await h.command("refresh");
+  assert.doesNotMatch(h.lines().join("\n"), /Unrequested deployment/);
+  h.emit("session_shutdown");
+});
 
-  process.env.PI_BRIEF_MODEL = "test/alternate";
-  const other = harness("tui", branch);
-  let otherOptions: unknown;
-  other.setComplete(async (_model, _context, options) => { otherOptions = options; return response; });
-  other.emit("session_start");
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal((otherOptions as { samplingParams?: unknown }).samplingParams, undefined);
-  assert.ok((otherOptions as { sessionId?: string }).sessionId);
-  other.emit("session_shutdown");
+test("validated entries restore with source anchors and no branch-array reversal", () => {
+  const source = [user(), assistant(), { type: "custom", customType: "pi-brief", data: { version: 1, brief, goalSources: ["u1"], trace: [{ who: "user", kind: "task", text: brief.goal }] } }];
+  const h = harness("tui", source);
+  h.setComplete(async () => new Promise(() => {}));
+  h.emit("session_start"); assert.match(h.lines()[0]!, /Goal: Fix checkout/);
+  assert.equal(source[0], source.find((row) => "id" in row && row.id === "u1"));
+  h.emit("session_shutdown");
+});
+
+test("headless modes neither call providers nor update UI", async () => {
+  for (const mode of ["print", "json", "rpc"]) {
+    const h = harness(mode, [user(), assistant()]); h.emit("session_start"); h.emit("before_agent_start", { prompt: "request" }); h.emit("agent_settled");
+    await h.command("refresh"); assert.equal(h.calls, 0); assert.deepEqual(h.statuses, []); assert.deepEqual(h.lines(), []);
+  }
+});
+
+test("default and overrides share bounded request options and session routing, with thinking disabled only for MiMo", async () => {
+  for (const name of [undefined, "test/alternate"]) {
+    if (name) process.env.PI_BRIEF_MODEL = name; else delete process.env.PI_BRIEF_MODEL;
+    const h = harness("tui", [user(), assistant()]); let options: any;
+    h.setComplete(async (_model, _context, opts) => { options = opts; return response(); });
+    h.emit("session_start"); await tick();
+    assert.deepEqual(h.lookups, [name ?? "opencode-go/mimo-v2.6-flash"]);
+    assert.equal(options.sessionId, "session-123"); assert.equal(options.maxRetries, 0); assert.equal(options.timeoutMs, 30000);
+    assert.equal(options.samplingParams?.chat_template_kwargs.enable_thinking, name ? undefined : false);
+    h.emit("session_shutdown");
+  }
   process.env.PI_BRIEF_MODEL = "test/brief";
 });
 
-test("users can disable the default; invalid config and missing models make no provider calls", () => {
-  const directory = join(home, ".pi", "agent");
-  mkdirSync(directory, { recursive: true });
-  delete process.env.PI_BRIEF_MODEL;
-  writeFileSync(join(directory, "brief.json"), JSON.stringify({ model: null }));
-  const disabled = harness();
-  disabled.emit("session_start");
-  assert.match(shown(disabled.widgets), /off: disabled/);
-  assert.deepEqual(disabled.modelLookups, []);
-  assert.equal(disabled.calls, 0);
-  disabled.emit("session_shutdown");
+test("config disables calls, rejects bad settings and observes the per-branch call cap", async () => {
+  const directory = join(home, ".pi", "agent"); mkdirSync(directory, { recursive: true });
+  const path = join(directory, "brief.json"); delete process.env.PI_BRIEF_MODEL;
+  for (const [config, status] of [[{ model: null }, "off: disabled"], [{ model: "missing/model" }, "off: model not found"], [{ maxCostUsd: -1 }, "config error"]] as const) {
+    writeFileSync(path, JSON.stringify(config)); const h = harness("tui", [user(), assistant()]); h.emit("session_start");
+    assert.ok(h.lines()[0]!.includes(status)); assert.equal(h.calls, 0); h.emit("session_shutdown");
+  }
+  writeFileSync(path, JSON.stringify({ model: "test/brief", maxCalls: 1, maxCostUsd: null }));
+  const h = harness("tui", [user(), assistant()]); h.emit("session_start"); await tick(); await h.command("refresh");
+  assert.equal(h.calls, 1); assert.match(h.lines()[0]!, /limit reached/); h.emit("session_shutdown");
+  rmSync(path); process.env.PI_BRIEF_MODEL = "test/brief";
+});
 
-  writeFileSync(join(directory, "brief.json"), JSON.stringify({ model: "missing/model", maxCostUsd: -1 }));
-  const invalid = harness();
-  invalid.emit("session_start");
-  assert.match(shown(invalid.widgets), /config error/);
-  assert.equal(invalid.calls, 0);
-  invalid.emit("session_shutdown");
-
-  writeFileSync(join(directory, "brief.json"), JSON.stringify({ model: "missing/model" }));
-  const missing = harness();
-  missing.emit("session_start");
-  assert.match(shown(missing.widgets), /off: model not found/);
-  assert.deepEqual(missing.modelLookups, ["missing/model"]);
-  assert.equal(missing.calls, 0);
-  missing.emit("session_shutdown");
-  rmSync(join(directory, "brief.json"));
-  process.env.PI_BRIEF_MODEL = "test/brief";
+test("provider stop reason and detail remain visible without retry", async () => {
+  const h = harness("tui", [user(), assistant()]); h.setComplete(async () => ({ ...response(value, "error"), errorMessage: "400 MissingSessionID" }));
+  h.emit("session_start"); await tick(); await h.command("status");
+  assert.match(h.notifications.at(-1)!, /model stopped: error: 400 MissingSessionID/); h.emit("session_shutdown");
 });

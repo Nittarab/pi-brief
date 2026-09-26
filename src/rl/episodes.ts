@@ -1,3 +1,5 @@
+import { sessionOutline } from "../evidence.ts";
+
 export type TurnTruth = {
   user: string;
   must: string[];
@@ -79,7 +81,7 @@ export function usersOf(episode: Episode): string[] {
 }
 
 export function outlineFor(users: string[]): string {
-  return ["Active agent trace (latest last):", ...users.map((user) => `- user: ${user}`)].join("\n");
+  return sessionOutline(users.map((text, index) => ({ id: `u${index}`, type: "message", message: { role: "user", content: text } }))) || JSON.stringify({ version: 1, users: [], activity: [], coverage: { omittedUsers: 0, omittedActivity: 0, truncated: 0, wrappers: users.length } });
 }
 
 export const goalSessions = episodes.map((episode) => ({
