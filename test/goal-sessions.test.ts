@@ -9,7 +9,7 @@ const blank = { goal: "—", done: "—", now: "—", next: "—", blocked: "—
 for (const session of goalSessions) {
   test(`synthetic session: ${session.name}`, () => {
     const users = session.users.map((text, index) => ({ id: `u${index}`, text }));
-    const locked = assess(emptyMemory(), { users, steps: [] }).memory.locked;
+    const locked = assess(emptyMemory(), { users }).memory.locked;
     assert.match(locked, session.lock, locked);
     for (const bad of session.reject) assert.equal(acceptModelGoal(bad, users, locked), "", bad);
     if (session.accept) {

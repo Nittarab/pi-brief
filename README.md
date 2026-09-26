@@ -4,7 +4,7 @@ A compact, persistent **Goal + Now** session brief on one line above Pi's editor
 
 ## Install
 
-Requires Pi 0.87.1 and Node.js 22.19+. Once published, install with `pi install npm:pi-brief`. Until then, from a local checkout use `pi install /absolute/path/to/pi-brief` or try `pi -e /absolute/path/to/pi-brief`. The package declares `pi.extensions: ["./src/index.ts"]` and the `pi-package` discovery keyword. Installing a Pi extension executes code with your user privileges: review the source first.
+Requires Pi 0.87.1 and Node.js 22.19+. Install the GitHub version with `pi install git:github.com/Nittarab/pi-brief`, or try a local checkout with `pi -e /absolute/path/to/pi-brief`. This package is not yet published on npm. It declares `pi.extensions: ["./src/index.ts"]` and the `pi-package` discovery keyword. Installing a Pi extension executes code with your user privileges: review the source first.
 
 **Automatic model calls:** The default is `opencode-go/mimo-v2.6-flash`, up to 80 calls per session/branch, with **no USD cap** (`maxCostUsd: null`). If that model is available and authenticated in Pi, pi-brief sends the bounded session outline to it after session activity, without a separate opt-in. If it is unavailable, the brief shows `off: model not found` and makes no request. Review [privacy and cost](#privacy-security-and-cost) before installing.
 

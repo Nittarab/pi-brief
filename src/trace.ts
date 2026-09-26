@@ -1,10 +1,8 @@
-import { cleanText, type Presented } from "./brief.ts";
+import { cleanText, visibleText, type Presented } from "./brief.ts";
 
 export type TraceUser = { id?: string; text: string };
-export type TraceStep = { role: "user" | "assistant" | "tool"; text: string };
 export type TraceMemory = { locked: string; lockBranch: string };
-export type RailStep = { flag: "●" | "◇" | "!" | "?"; text: string };
-export type Rail = { locked: string; drift: string; suspect: string; left: string; steps: RailStep[]; presented: Presented[] };
+export type Rail = { locked: string; drift: string; left: string; presented: Presented[] };
 
 const continuations = new Set([
   "ok", "okay", "yes", "no", "y", "n", "k", "yep", "nope", "do it", "try again", "continue",
@@ -15,7 +13,7 @@ const stops = new Set(["a", "an", "the", "to", "of", "and", "or", "for", "in", "
 const pivot = /\b(new task|instead|forget that|forget the|stop doing|change the goal|different task|different goal|switch to)\b|^actually[, ]/i;
 
 export const emptyMemory = (): TraceMemory => ({ locked: "", lockBranch: "" });
-export const emptyRail = (): Rail => ({ locked: "", drift: "", suspect: "", left: "", steps: [], presented: [] });
+export const emptyRail = (): Rail => ({ locked: "", drift: "", left: "", presented: [] });
 
 function contentWords(text: string): string[] {
   return cleanText(text).toLowerCase().replace(/[^a-z0-9+/.-]+/g, " ").split(" ").filter((word) => word && !stops.has(word));
@@ -45,13 +43,6 @@ function continuation(text: string): boolean {
 export function isPivot(text: string): boolean {
   const plain = cleanText(text, 140);
   return Boolean(plain) && !continuation(plain) && pivot.test(plain);
-}
-
-export function isSuspect(locked: string, text: string): boolean {
-  const plain = cleanText(text, 140);
-  if (!locked || !plain || continuation(plain) || isPivot(plain)) return false;
-  const words = contentWords(plain);
-  return words.length >= 3 && overlap(contentWords(locked), words) < 0.34;
 }
 
 export function isWrapper(text: string): boolean {
@@ -101,10 +92,8 @@ function driftText(locked: string, users: TraceUser[], goal = "", now = ""): str
 
 export function assess(memory: TraceMemory, input: {
   users: TraceUser[];
-  steps: TraceStep[];
   modelGoal?: string;
   modelNow?: string;
-  inFlight?: string;
 }): { memory: TraceMemory; rail: Rail } {
   const users = input.users.map((user) => ({ id: user.id, text: cleanText(user.text, 140) })).filter((user) => user.text);
   let locked = memory.locked;
@@ -120,28 +109,11 @@ export function assess(memory: TraceMemory, input: {
   if (lockBranch && key === lockBranch) {
     for (const user of users) if (isPivot(user.text)) locked = lockText(user.text);
   }
-  const latest = users.at(-1)?.text ?? "";
-  const onLockBranch = !lockBranch || key === lockBranch;
-  const suspect = onLockBranch && isSuspect(locked, latest) ? latest : "";
   const left = lockBranch && key !== lockBranch ? (users[0]?.text ?? "—") : "";
-  const steps = input.steps.filter((step) => step.role !== "tool" && cleanText(step.text, 80)).map((step) => ({
-    flag: step.role === "assistant" ? "◇" as const : isPivot(step.text) ? "!" as const : "●" as const,
-    text: cleanText(step.text, 80),
-  }));
   return {
     memory: { locked, lockBranch },
-    rail: { locked, drift: driftText(locked, users, input.modelGoal, input.modelNow), suspect, left, steps, presented: [] },
+    rail: { locked, drift: driftText(locked, users, input.modelGoal, input.modelNow), left, presented: [] },
   };
-}
-
-function visibleText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.flatMap((part) => {
-    if (!part || typeof part !== "object") return [];
-    const item = part as { type?: string; text?: string };
-    return item.type === "text" && typeof item.text === "string" ? [item.text] : [];
-  }).join(" ");
 }
 
 type Loose = { id?: string; type?: string; message?: { role?: string; content?: unknown } };
@@ -156,23 +128,6 @@ export function usersFrom(branch: unknown[]): TraceUser[] {
     if (text) users.push({ id: item.id, text });
   }
   return users;
-}
-
-export function stepsFrom(branch: unknown[]): TraceStep[] {
-  const steps: TraceStep[] = [];
-  for (const entry of branch) {
-    if (!entry || typeof entry !== "object") continue;
-    const item = entry as Loose;
-    if (item.type !== "message" || !item.message) continue;
-    if (item.message.role === "user") {
-      const text = cleanText(visibleText(item.message.content), 80);
-      if (text) steps.push({ role: "user", text });
-    } else if (item.message.role === "assistant") {
-      const text = cleanText(visibleText(item.message.content), 80);
-      if (text) steps.push({ role: "assistant", text });
-    }
-  }
-  return steps;
 }
 
 export function phrase(text: string): string {

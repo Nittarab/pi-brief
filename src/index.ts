@@ -134,7 +134,6 @@ export default function piBrief(pi: ExtensionAPI) {
   let memory: TraceMemory = emptyMemory();
   let rail: Rail = emptyRail();
   let pendingUser = "";
-  let inFlight = "";
   let railWanted = true;
   let displayGoal = "";
   let traceOpen = false;
@@ -169,7 +168,7 @@ export default function piBrief(pi: ExtensionAPI) {
     const users = usersFrom(branch);
     if (pendingUser && users.at(-1)?.text !== pendingUser) users.push({ text: pendingUser });
     const next = assess(memory, {
-      users, steps: [], modelGoal: controller?.brief.goal, modelNow: controller?.brief.now, inFlight,
+      users, modelGoal: controller?.brief.goal, modelNow: controller?.brief.now,
     });
     memory = next.memory;
     displayGoal = acceptModelGoal(controller?.brief.goal ?? "", users, memory.locked) || memory.locked;
@@ -245,23 +244,19 @@ export default function piBrief(pi: ExtensionAPI) {
     }, (brief, changed) => {
       if (controller !== current) return; // A switched session/branch cannot write to the active branch.
       if (changed) pi.appendEntry(key, { brief, trace: current.presented }); // Branch-local, excluded from the agent's context.
-      if (activity !== "working" && !activity.startsWith("using ")) {
-        activity = current.stats.error ? "update failed" : current.stats.limit ? "limit reached" : "";
-      }
+      activity = current.stats.error ? "update failed" : current.stats.limit ? "limit reached" : "";
       refresh(ctx);
     }, restored, config.maxCalls, config.maxCostUsd, savedPresented(ctx));
     controller = current;
     refresh(ctx);
     const outline = outlineFor(ctx, memory.locked);
-    if (restored && !outline) current.noteOutline("");
-    else if (outline) current.revise(outline);
+    if (outline) current.revise(outline);
   }
 
   pi.on("session_start", (_event, ctx) => {
     memory = emptyMemory();
     rail = emptyRail();
     pendingUser = "";
-    inFlight = "";
     closeTrace(ctx);
     start(ctx);
     openTrace(ctx);
@@ -279,18 +274,9 @@ export default function piBrief(pi: ExtensionAPI) {
     pendingUser = cleanText(event.prompt, 140);
     if (ctx.mode === "tui") refresh(ctx);
   });
-  pi.on("tool_execution_start", (event, ctx) => {
-    inFlight = cleanText(event.toolName, 24);
-    if (ctx.mode === "tui") refresh(ctx);
-  });
-  pi.on("tool_execution_end", (_event, ctx) => {
-    inFlight = "";
-    if (ctx.mode === "tui") refresh(ctx);
-  });
   pi.on("agent_settled", (_event, ctx) => {
     if (!controller) return;
     pendingUser = "";
-    inFlight = "";
     activity = controller.stats.error ? "update failed" : controller.stats.limit ? "limit reached" : "";
     refresh(ctx);
     controller.revise(outlineFor(ctx, memory.locked));

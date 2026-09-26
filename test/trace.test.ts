@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { acceptModelGoal, assess, emptyMemory, isPivot, isSuspect, phrase, railColor, renderRail, sameTask, type TraceMemory, type TraceStep, type TraceUser } from "../src/trace.ts";
+import { acceptModelGoal, assess, emptyMemory, isPivot, phrase, railColor, renderRail, sameTask, usersFrom, type TraceMemory, type TraceUser } from "../src/trace.ts";
 
-function run(users: TraceUser[], steps: TraceStep[] = [], modelGoal = "", modelNow = "", memory: TraceMemory = emptyMemory()) {
-  return assess(memory, { users, steps, modelGoal, modelNow });
+function run(users: TraceUser[], modelGoal = "", modelNow = "", memory: TraceMemory = emptyMemory()) {
+  return assess(memory, { users, modelGoal, modelNow });
 }
 
 test("a check question does not replace the sustained goal", () => {
@@ -13,11 +13,18 @@ test("a check question does not replace the sustained goal", () => {
     { text: "I want the agentic trace presented by the model" },
     { text: "why is the goal daily standup? that clearly is not" },
   ];
-  const locked = assess(emptyMemory(), { users, steps: [] }).memory.locked;
+  const locked = assess(emptyMemory(), { users }).memory.locked;
   assert.match(locked, /fix the pi-brief TUI/);
   assert.equal(acceptModelGoal("Explain why the goal is standup", users, locked), "");
   assert.equal(acceptModelGoal("Run the daily standup", users, locked), "");
   assert.match(acceptModelGoal("Show a model-written agent trace while the session runs", users, locked), /agent trace/);
+});
+
+test("user extraction keeps visible text, not hidden content or tool results", () => {
+  assert.deepEqual(usersFrom([
+    { id: "u1", type: "message", message: { role: "user", content: [{ type: "text", text: "Ship" }, { type: "thinking", text: "SECRET" }, { type: "text", text: "brief" }] } },
+    { type: "message", message: { role: "toolResult", content: "SECRET_OUTPUT" } },
+  ]), [{ id: "u1", text: "Ship brief" }]);
 });
 
 test("a skill tag does not become the goal", () => {
@@ -33,7 +40,6 @@ test("a skill tag does not become the goal", () => {
       { id: "u2", text: "Can we fix the pi-brief TUI?" },
       { id: "u3", text: "try again" },
     ],
-    steps: [],
   });
   assert.equal(kept.memory.locked, "Can we fix the pi-brief TUI?");
 });
@@ -41,13 +47,11 @@ test("a skill tag does not become the goal", () => {
 test("simulated stable session keeps the lock and ignores short follow-ups", () => {
   const first = run(
     [{ id: "u1", text: "Fix the brief line" }, { id: "u2", text: "ok do it" }],
-    [{ role: "user", text: "Fix the brief line" }, { role: "assistant", text: "I will fit the row" }, { role: "tool", text: "bash" }],
     "Fix the brief line",
     "Fit the row",
   );
   assert.equal(first.memory.locked, "Fix the brief line");
   assert.equal(first.rail.drift, "");
-  assert.equal(first.rail.suspect, "");
   assert.equal(first.rail.left, "");
   assert.equal(isPivot("ok do it"), false);
   const rail = renderRail(first.rail, 34, 16).join("\n");
@@ -61,7 +65,6 @@ test("simulated model drift does not move the lock", () => {
   const locked = run([{ id: "u1", text: "Fix the brief line" }]).memory;
   const drifted = run(
     [{ id: "u1", text: "Fix the brief line" }, { id: "u2", text: "try again" }],
-    [{ role: "user", text: "Fix the brief line" }],
     "Publish the npm package",
     "Review",
     locked,
@@ -79,20 +82,15 @@ test("simulated user pivot moves the lock and a side ask does not", () => {
   const locked = run([{ id: "u1", text: "Fix the brief line" }]).memory;
   const side = run(
     [{ id: "u1", text: "Fix the brief line" }, { id: "u2", text: "add a right rail" }],
-    [{ role: "user", text: "Fix the brief line" }, { role: "user", text: "add a right rail" }],
     "Fix the brief line",
     "Fit the row",
     locked,
   );
   assert.equal(side.memory.locked, "Fix the brief line");
-  assert.equal(isSuspect("Fix the brief line", "add a right rail"), true);
-  assert.match(side.rail.suspect, /add a right rail/);
-  assert.equal(side.rail.suspect.includes("add a right rail"), true);
   assert.doesNotMatch(renderRail(side.rail, 40, 14).join("\n"), /add a right rail/);
 
   const moved = run(
     [{ id: "u1", text: "Fix the brief line" }, { id: "u2", text: "instead, add a right rail" }],
-    [{ role: "user", text: "instead, add a right rail" }],
     "Fix the brief line",
     "Fit the row",
     locked,
@@ -105,11 +103,11 @@ test("simulated user pivot moves the lock and a side ask does not", () => {
 
 test("simulated branch switch keeps the old goal visible", () => {
   const locked = run([{ id: "u1", text: "Fix the brief line" }]).memory;
-  const left = run([{ id: "u9", text: "Write the standup" }], [], "Write the standup", "Draft notes", locked);
+  const left = run([{ id: "u9", text: "Write the standup" }], "Write the standup", "Draft notes", locked);
   assert.equal(left.memory.locked, "Fix the brief line");
   assert.equal(left.rail.left, "Write the standup");
   assert.match(renderRail(left.rail, 36, 10).join("\n"), /↩ Write the standup/);
-  const back = run([{ id: "u1", text: "Fix the brief line" }], [], "Fix the brief line", "Fit the row", left.memory);
+  const back = run([{ id: "u1", text: "Fix the brief line" }], "Fix the brief line", "Fit the row", left.memory);
   assert.equal(back.rail.left, "");
   assert.equal(back.memory.locked, "Fix the brief line");
 });
@@ -128,7 +126,6 @@ test("wording drops skill tags, paths, and process openers", () => {
 test("rail fills the requested height and never exceeds the width", () => {
   const assessed = run(
     [{ id: "u1", text: "Fix the brief line so the session stays on the task" }],
-    [],
   );
   assessed.rail.presented = Array.from({ length: 12 }, (_, index) => ({ who: "agent" as const, kind: "turn" as const, text: `decided ${index}` }));
   const lines = renderRail(assessed.rail, 28, 9);

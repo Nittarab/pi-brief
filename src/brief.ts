@@ -95,7 +95,7 @@ export function promptFor(previous: Brief, events: Activity[], outline = false):
 type LooseEntry = { id?: string; type?: string; message?: { role?: string; content?: unknown } };
 type LooseNode = { entry?: LooseEntry; children?: unknown[]; label?: string };
 
-function visibleText(content: unknown): string {
+export function visibleText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   return content.flatMap((part) => {
@@ -265,11 +265,6 @@ export class BriefController {
     this.outlineMode = true;
     this.failed = false;
     this.trigger();
-  }
-
-  noteOutline(outline: string): void {
-    const text = cleanText(outline, 3500);
-    if (text) this.sentOutline = text;
   }
 
   trigger(): void {
