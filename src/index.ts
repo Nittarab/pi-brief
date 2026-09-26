@@ -11,6 +11,7 @@ const key = "pi-brief";
 const footerKey = " pi-brief";
 const widgetKey = "pi-brief";
 const configPath = join(homedir(), ".pi", "agent", "brief.json");
+const defaultModel = "opencode-go/mimo-v2.6-flash";
 
 type Config = { model: string; maxCalls: number; maxCostUsd: number | null };
 
@@ -22,9 +23,9 @@ function configured(): Config | undefined {
   }
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) throw new Error("brief.json must be an object");
   const data = settings as Record<string, unknown>;
-  const model = process.env.PI_BRIEF_MODEL?.trim() || data.model;
-  if (model === undefined || model === "") return undefined;
-  if (typeof model !== "string" || !/^[^\s/]+\/[^\s/]+$/.test(model)) throw new Error("model must be provider/model");
+  const model = process.env.PI_BRIEF_MODEL?.trim() || (data.model === undefined ? defaultModel : data.model);
+  if (model === null) return undefined; // Explicit opt-out: { "model": null }.
+  if (typeof model !== "string" || !/^[^\s/]+\/[^\s/]+$/.test(model)) throw new Error("model must be provider/model or null");
   const maxCalls = data.maxCalls === undefined ? 80 : data.maxCalls;
   if (typeof maxCalls !== "number" || !Number.isSafeInteger(maxCalls) || maxCalls < 1) throw new Error("invalid maxCalls");
   const maxCostUsd = data.maxCostUsd === undefined ? null : data.maxCostUsd;
@@ -214,7 +215,7 @@ export default function piBrief(pi: ExtensionAPI) {
       return;
     }
     if (!config) {
-      activity = "off: configure model";
+      activity = "off: disabled";
       show(ctx);
       return;
     }
@@ -302,7 +303,7 @@ export default function piBrief(pi: ExtensionAPI) {
         ctx.ui.notify("Use /brief, /brief status, or /brief refresh", "warning"); return;
       }
       if (!controller) {
-        ctx.ui.notify(`Brief off. Set PI_BRIEF_MODEL=provider/model or configure ${configPath}.`, "info"); return;
+        ctx.ui.notify(`Brief off. Set PI_BRIEF_MODEL=provider/model or change ${configPath}.`, "info"); return;
       }
       if (action === "refresh") {
         controller.revise(outlineFor(ctx, memory.locked), true);

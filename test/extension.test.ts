@@ -23,6 +23,7 @@ function harness(mode = "tui", initial: unknown[] = []) {
   const entries: unknown[] = [];
   let branch = initial;
   let calls = 0;
+  const modelLookups: string[] = [];
   let complete = async (_model: unknown, _context: unknown, _options: unknown): Promise<typeof response> => response;
   const commands = new Map<string, (args: string) => Promise<void>>();
   const ctx = {
@@ -30,8 +31,10 @@ function harness(mode = "tui", initial: unknown[] = []) {
     ui: { setStatus: (key: string, text: string | undefined) => statuses.push([key, text]),
       setWidget: (key: string, content: Widget) => widgets.push([key, content]),
       notify: (text: string) => notifications.push(text) },
-    modelRegistry: { find: (provider: string, model: string) => provider === "test" && model === "brief" ? { id: model } : undefined,
-      complete: (...args: [unknown, unknown, unknown]) => { calls++; return complete(...args); } },
+    modelRegistry: { find: (provider: string, model: string) => {
+      modelLookups.push(`${provider}/${model}`);
+      return ["test/brief", "test/alternate", "opencode-go/mimo-v2.6-flash"].includes(`${provider}/${model}`) ? { id: model } : undefined;
+    }, complete: (...args: [unknown, unknown, unknown]) => { calls++; return complete(...args); } },
     sessionManager: { getBranch: () => [...branch] },
   } as unknown as ExtensionContext;
   extension({ on: (name: string, handler: Handler) => { handlers.set(name, handler); return () => {}; },
@@ -41,7 +44,7 @@ function harness(mode = "tui", initial: unknown[] = []) {
     },
   } as unknown as ExtensionAPI);
   const emit = (name: string, event: unknown = {}) => handlers.get(name)?.(event, ctx);
-  return { ctx, emit, statuses, widgets, notifications, entries, command: (args: string, name = "brief") => {
+  return { ctx, emit, statuses, widgets, notifications, entries, modelLookups, command: (args: string, name = "brief") => {
     const run = commands.get(name);
     if (!run) throw new Error(`missing command ${name}`);
     return run(args);
@@ -240,21 +243,58 @@ test("configuration accepts nullable USD limit and rejects invalid limits withou
   rmSync(join(directory, "brief.json"));
 });
 
-test("configuration errors and missing models report a persistent off line without calling the provider", () => {
-  delete process.env.PI_BRIEF_MODEL;
-  const h = harness();
-  h.emit("session_start");
-  assert.match(shown(h.widgets), /off: configure model/);
-  assert.equal(h.statuses.at(-1)?.[1], undefined);
-  h.emit("session_shutdown");
+test("the built-in default runs without a config file and file/env overrides win", async () => {
   const directory = join(home, ".pi", "agent");
   mkdirSync(directory, { recursive: true });
+  delete process.env.PI_BRIEF_MODEL;
+  const initial = [{ type: "message", message: { role: "user", content: "Ship it" } }];
+  const defaults = harness("tui", initial);
+  defaults.emit("session_start");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(defaults.modelLookups, ["opencode-go/mimo-v2.6-flash"]);
+  assert.equal(defaults.calls, 1);
+  defaults.emit("session_shutdown");
+
+  writeFileSync(join(directory, "brief.json"), JSON.stringify({ model: "test/alternate" }));
+  const file = harness();
+  file.emit("session_start");
+  assert.deepEqual(file.modelLookups, ["test/alternate"]);
+  file.emit("session_shutdown");
+
+  process.env.PI_BRIEF_MODEL = "test/brief";
+  const env = harness();
+  env.emit("session_start");
+  assert.deepEqual(env.modelLookups, ["test/brief"]);
+  env.emit("session_shutdown");
+  rmSync(join(directory, "brief.json"));
+});
+
+test("users can disable the default; invalid config and missing models make no provider calls", () => {
+  const directory = join(home, ".pi", "agent");
+  mkdirSync(directory, { recursive: true });
+  delete process.env.PI_BRIEF_MODEL;
+  writeFileSync(join(directory, "brief.json"), JSON.stringify({ model: null }));
+  const disabled = harness();
+  disabled.emit("session_start");
+  assert.match(shown(disabled.widgets), /off: disabled/);
+  assert.deepEqual(disabled.modelLookups, []);
+  assert.equal(disabled.calls, 0);
+  disabled.emit("session_shutdown");
+
   writeFileSync(join(directory, "brief.json"), JSON.stringify({ model: "missing/model", maxCostUsd: -1 }));
   const invalid = harness();
   invalid.emit("session_start");
   assert.match(shown(invalid.widgets), /config error/);
-  assert.equal(invalid.statuses.at(-1)?.[1], undefined);
   assert.equal(invalid.calls, 0);
+  invalid.emit("session_shutdown");
+
+  writeFileSync(join(directory, "brief.json"), JSON.stringify({ model: "missing/model" }));
+  const missing = harness();
+  missing.emit("session_start");
+  assert.match(shown(missing.widgets), /off: model not found/);
+  assert.deepEqual(missing.modelLookups, ["missing/model"]);
+  assert.equal(missing.calls, 0);
+  missing.emit("session_shutdown");
   rmSync(join(directory, "brief.json"));
   process.env.PI_BRIEF_MODEL = "test/brief";
 });
