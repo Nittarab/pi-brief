@@ -142,6 +142,24 @@ test("validated entries restore with source anchors and no branch-array reversal
   h.emit("session_shutdown");
 });
 
+test("restored drift alignment agrees with its warning before and after a startup failure", async () => {
+  const source = [user(), assistant(), { type: "custom", customType: "pi-brief", data: {
+    version: 1, brief, goalSources: ["u1"], alignment: "drifting", trace: [
+      { who: "user", kind: "task", text: brief.goal }, { who: "agent", kind: "drift", text: "Forbidden deployment" },
+    ],
+  } }];
+  const h = harness("tui", source);
+  let resolve!: (value: ReturnType<typeof response>) => void;
+  h.setComplete(async () => new Promise((r) => { resolve = r; }));
+  h.emit("session_start");
+  assert.match(h.lines().join("\n"), /! Forbidden deployment/);
+  await h.command("status"); assert.match(h.notifications.at(-1)!, /alignment: drifting/);
+  resolve(response(value, "error")); await tick();
+  assert.match(h.lines().join("\n"), /! Forbidden deployment/);
+  await h.command("status"); assert.match(h.notifications.at(-1)!, /alignment: drifting.*last error/);
+  h.emit("session_shutdown");
+});
+
 test("headless modes neither call providers nor update UI", async () => {
   for (const mode of ["print", "json", "rpc"]) {
     const h = harness(mode, [user(), assistant()]); h.emit("session_start"); h.emit("before_agent_start", { prompt: "request" }); h.emit("agent_settled");

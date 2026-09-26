@@ -34,7 +34,7 @@ export function judgePackets(cases: EvalCase[], candidates: Candidate[]) {
     catch (failure) { error = failure instanceof Error ? failure.message : String(failure); }
     // The judge sees the untruncated fixture, not merely the lossy model input.
     const source = item.messages.map((message, index) => ({ id: `${message.role === "user" ? "u" : "a"}${index}`, ...message }));
-    return { id: item.id, fingerprint: hash({ source, reference: item.reference, raw: candidate.raw, error }), source, reference: item.reference,
+    return { id: item.id, fingerprint: hash({ source, reference: item.reference, raw: candidate.raw, accepted, error }), source, reference: item.reference,
       candidate: { raw: candidate.raw, accepted: error ? null : accepted, error: error ?? null } };
   });
 }

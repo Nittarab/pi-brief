@@ -94,7 +94,7 @@ export class BriefController {
     private readonly maxCalls = 80,
     private readonly maxCostUsd: number | null = null,
     initialPresented: Presented[] = [],
-    private readonly initialGoalSources: string[] = [],
+    private readonly initialProvenance?: Pick<Judgment, "goalSources" | "alignment">,
   ) {
     this.summary = initial ? { ...initial } : { ...blank };
     this.shown = initialPresented.map((step) => ({ ...step }));
@@ -102,8 +102,8 @@ export class BriefController {
 
   get brief(): Brief { return { ...this.summary }; }
   get presented(): Presented[] { return this.shown.map((step) => ({ ...step })); }
-  get goalSources(): string[] { return [...(this.judgment?.goalSources ?? this.initialGoalSources)]; }
-  get alignment(): Judgment["alignment"] { return this.judgment?.alignment ?? "unknown"; }
+  get goalSources(): string[] { return [...(this.judgment?.goalSources ?? this.initialProvenance?.goalSources ?? [])]; }
+  get alignment(): Judgment["alignment"] { return this.judgment?.alignment ?? this.initialProvenance?.alignment ?? "unknown"; }
   get stats() { return { calls: this.calls, cost: this.cost, error: this.error, pending: this.pending.length, running: this.running,
     limit: this.calls >= this.maxCalls || (this.maxCostUsd !== null && this.cost >= this.maxCostUsd) }; }
 

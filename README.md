@@ -32,7 +32,7 @@ A goal follows the user's sustained outcome, including later requirements and pr
 
 Drift is a **model judgment**, not a word-overlap score. Necessary investigation, tests and approval waits can be aligned even when their words differ from the goal. Work with the same nouns can still violate a constraint. Alignment can be `unknown`: tool names alone do not prove what the agent is doing. The extension checks that goal/pivot citations refer to user messages and drift citations refer to visible assistant text on the active branch. **Valid citations prove provenance, not that the judgment is correct.** Check important claims yourself.
 
-Done is prefixed with **Reported:**. The extension does not see test output and cannot independently verify completion. An assistant's plan is not a result.
+Done is prefixed with **Reported:**. The extension does not see test output and cannot independently verify completion. An assistant's plan is not a result. Progress fields concern the current goal, not abandoned work.
 
 ## Evidence and lifecycle
 
@@ -40,7 +40,7 @@ The data path is `active branch → bounded evidence → shared prompt/model cal
 
 - `src/evidence.ts` keeps user requests separate from recent activity, with stable entry IDs and original order. It retains the first three user records, up to four cited goal anchors, and recent requests, up to 12 users total. Recent visible assistant text has its own budget so a tool burst does not remove user intent.
 - User text starts with a 1,600-character limit; assistant text with 900. Oversized records retain both ends and a truncation marker. The serialized evidence is capped at 24,000 characters, including JSON escaping. Omitted and truncated record counts travel with the evidence. Missing middle content can still contain important constraints; this remains a limitation, not proof of alignment or drift.
-- Skill expansion bodies are removed, but a request outside the wrapper remains. Other tree branches, thinking, raw tool arguments and raw tool results are excluded. Tool names and error flags are metadata, not result proof.
+- Skill expansion bodies and locations are removed; invoked skill names, user IDs and arguments remain. A skill invocation can establish a goal but does not override later user requests. Other tree branches, thinking, raw tool arguments and raw tool results are excluded. Tool names and error flags are metadata, not result proof.
 - `src/judgment.ts` owns one prompt and validates shape, source roles and citations. There are no topic blacklists, noun-overlap thresholds or model-written alternative task labels. The trace task is derived from the accepted goal.
 - `src/model.ts` owns request options for both the extension and live evaluation. One call, 700 output tokens, 30-second timeout, zero retries. Only the verified default MiMo model receives the thinking-disable option; alternatives use provider-neutral options.
 - A call runs after settlement or branch navigation, not on each tool event. One request is in flight. A later user turn invalidates its result. Branch/session navigation closes it and restores only the selected branch. Empty trace updates clear old warnings. Old ungrounded stored briefs are not restored; the active branch is summarized again.
@@ -67,7 +67,7 @@ npm pack --dry-run
 
 Unit and extension-harness tests cover evidence bounds/privacy, citations, branch restoration, superseded replies, warning clearing, headless behavior and cost limits. They do **not** establish live model accuracy.
 
-`test/fixtures/judgment-cases.json` contains 12 synthetic acceptance cases. Their natural-language references are fixed before a candidate run. References are withheld from the summarizer. Judge packets include the original, untruncated fixture so the judge can detect information lost by the pipeline. This corpus is a regression set, not an independent generalization benchmark.
+`test/fixtures/judgment-cases.json` contains 14 synthetic acceptance cases. Their natural-language references are fixed before a candidate run. References are withheld from the summarizer. Judge packets include the original, untruncated fixture so the judge can detect information lost by the pipeline. This corpus is a regression set, not an independent generalization benchmark.
 
 Offline requests (no model call):
 
@@ -79,7 +79,7 @@ An **approved** live run uses the configured Pi model and the same adapter as th
 
 ```sh
 node --experimental-transform-types scripts/goal-eval.mjs --live \
-  --max-calls 12 --max-cost-usd 0.25 --output /tmp/brief-candidates.json
+  --max-calls 14 --max-cost-usd 0.25 --output /tmp/brief-candidates.json
 ```
 
 This command spends money; the example is not authorization. It runs sequentially, saves each response and stops on provider failure without retry. The USD ceiling is post-call. If a limit stops the run early, missing cases cannot pass.

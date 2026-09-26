@@ -32,6 +32,7 @@ if (values.live) {
   const artifact = { model: config.model, promptVersion, revision: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
     dirty: Boolean(execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }).trim()), provenance: corpus.provenance, cost: 0, cases: [] };
   const cap = Math.min(maxCost, config.maxCostUsd ?? Infinity);
+  emit(artifact); // Prove the evidence file is writable before any paid request.
   for (const item of corpus.cases) {
     if (artifact.cases.length >= maxCalls || artifact.cost >= cap) { process.exitCode = 1; break; }
     const input = caseInput(item), started = Date.now();

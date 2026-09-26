@@ -19,7 +19,7 @@ function verdicts(packets: ReturnType<typeof judgePackets>) {
 }
 
 test("model input excludes reference answers; blind judge sees original source and no model/version label", () => {
-  assert.equal(corpus.cases.length, 12);
+  assert.equal(corpus.cases.length, 14);
   assert.match(corpus.provenance, /synthetic/);
   for (const row of corpus.cases) assert.ok(!caseInput(row).prompt.includes(row.reference));
   const packets = judgePackets([item], [{ ...candidate(), model: "candidate-winner" } as ReturnType<typeof candidate>]);
@@ -65,7 +65,7 @@ test("eval defaults to offline requests and live calls require an explicit bound
   const path = new URL("../scripts/goal-eval.mjs", import.meta.url);
   const stdout = execFileSync(process.execPath, ["--experimental-transform-types", path.pathname], { encoding: "utf8" });
   const requests = JSON.parse(stdout);
-  assert.equal(requests.requests.length, 12);
+  assert.equal(requests.requests.length, 14);
   assert.ok(requests.requests.every((row: { sourceHash?: string }) => row.sourceHash));
   assert.throws(() => execFileSync(process.execPath, ["--experimental-transform-types", path.pathname, "--live"], { stdio: "pipe" }), /Command failed/);
 });

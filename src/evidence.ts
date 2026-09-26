@@ -5,6 +5,7 @@ export type EvidenceRecord = {
   role: "user" | "assistant" | "toolResult";
   text: string;
   tools?: string[];
+  skills?: string[];
   isError?: boolean;
   truncated?: boolean;
 };
@@ -48,10 +49,14 @@ export function buildEvidence(branch: unknown[], anchors: string[] = []): Eviden
     const id = typeof entry.id === "string" && entry.id && entry.id.length <= 128 ? entry.id : `entry-${index}`;
     if (message.role === "user") {
       const original = visibleText(message.content);
-      // Remove expansion bodies, not the user's request before/after the wrapper.
-      const text = cleanText(original.replace(/<skill\s+name=[^>]*>[\s\S]*?(?:<\/skill>|$)/gi, " "), Infinity);
+      // Pi expands /skill:name into a wrapper. Keep the invocation identity, never its body or location.
+      const skills: string[] = [];
+      const text = cleanText(original.replace(/<skill\s+name=["']([^"']+)["'][^>]*>[\s\S]*?(?:<\/skill>|$)/gi, (_wrapper, name: string) => {
+        if (skills.length < 4) skills.push(cleanText(name, 80));
+        return " ";
+      }), Infinity);
       if (text !== cleanText(original, Infinity)) wrappers++;
-      if (text) users.push({ id, order: index, role: "user", ...bounded(text, 1600) });
+      if (text || skills.length) users.push({ id, order: index, role: "user", ...bounded(text, 1600), ...(skills.length ? { skills } : {}) });
     } else if (message.role === "assistant") {
       const tools = Array.isArray(message.content) ? message.content.flatMap((part: unknown) => {
         const item = part as { type?: string; name?: unknown } | null;

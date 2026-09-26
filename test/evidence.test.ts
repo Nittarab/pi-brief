@@ -45,6 +45,22 @@ test("skill transport is context, but a task outside a skill wrapper survives", 
   assert.equal(evidence.coverage.wrappers, 1);
 });
 
+test("Pi-expanded skill calls retain identity and a citable user record without the skill body or location", () => {
+  // Pi _expandSkillCommand emits this shape for /skill:standup [args].
+  const expansion = '<skill name="standup" location="/private/skills/standup/SKILL.md">\nReferences are relative to /private/skills.\n\nSECRET_SKILL_BODY\n</skill>';
+  for (const suffix of ["", "\n\nfor yesterday"]) {
+    const evidence = buildEvidence([user("u1", expansion + suffix), assistant("a1", "I am gathering standup updates")]);
+    assert.equal(evidence.users[0]?.id, "u1");
+    assert.deepEqual(evidence.users[0]?.skills, ["standup"]);
+    assert.equal(evidence.users[0]?.text, suffix.trim());
+    assert.doesNotMatch(JSON.stringify(evidence), /SECRET_SKILL_BODY|\/private/);
+    const reply = candidate(); reply.goal = "Prepare the standup"; reply.alignment = "aligned"; reply.trace.drift = ""; reply.evidence.drift = [];
+    assert.equal(parseJudgment(JSON.stringify(reply), evidence).brief.goal, reply.goal);
+  }
+  const later = buildEvidence([user("u1", expansion), user("u2", "Leave standup. Fix checkout instead.")]);
+  assert.equal(later.users.at(-1)?.id, "u2", "skill identity does not replace later requests");
+});
+
 test("judgment validates provenance, not vocabulary, and derives task from the accepted goal", () => {
   const accepted = parseJudgment(JSON.stringify(candidate()), buildEvidence(branch));
   assert.equal(accepted.alignment, "drifting");

@@ -6,6 +6,7 @@ import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-c
 import { BriefController, briefLine, cleanText, display, isBrief, parsePresented, sessionOutline, type Brief, type Presented } from "./brief.ts";
 import { emptyRail, railColor, renderRail, type Rail } from "./trace.ts";
 import { completeBrief, defaultModel } from "./model.ts";
+import type { Judgment } from "./judgment.ts";
 
 const key = "pi-brief";
 // Older builds wrote this footer key. Clear it so the line is not shown twice.
@@ -45,38 +46,21 @@ function outlineFor(ctx: ExtensionContext, anchors: string[] = []): string {
   return sessionOutline(ctx.sessionManager.getBranch(), [], anchors);
 }
 
-function savedSources(ctx: ExtensionContext): string[] {
+function savedJudgment(ctx: ExtensionContext): Judgment | undefined {
   for (const entry of [...ctx.sessionManager.getBranch()].reverse()) {
-    if (entry.type === "custom" && entry.customType === key) {
-      const data = entry.data as { version?: number; goalSources?: unknown } | undefined;
-      return data?.version === 1 && Array.isArray(data.goalSources)
-        ? data.goalSources.filter((id): id is string => typeof id === "string").slice(0, 4) : [];
-    }
-  }
-  return [];
-}
-
-function savedPresented(ctx: ExtensionContext): Presented[] {
-  for (const entry of [...ctx.sessionManager.getBranch()].reverse()) {
-    if (entry.type === "custom" && entry.customType === key) {
-      const data = entry.data as { version?: number; trace?: unknown } | undefined;
-      return data?.version === 1 && Array.isArray(data.trace) ? parsePresented(JSON.stringify({ trace: data.trace })) : [];
-    }
-  }
-  return [];
-}
-
-function savedBrief(ctx: ExtensionContext): Brief | undefined {
-  for (const entry of [...ctx.sessionManager.getBranch()].reverse()) {
-    if (entry.type === "custom" && entry.customType === key) {
-      const data = entry.data as { version?: number; brief?: unknown } | undefined;
-      const brief = data?.version === 1 ? data.brief : undefined;
-      if (isBrief(brief)) return {
-        goal: cleanText(brief.goal, 140) || "—", done: cleanText(brief.done, 140) || "—",
-        now: cleanText(brief.now, 140) || "—", next: cleanText(brief.next, 140) || "—",
-        blocked: cleanText(brief.blocked, 140) || "—",
-      };
-    }
+    if (entry.type !== "custom" || entry.customType !== key) continue;
+    const data = entry.data as { version?: number; brief?: unknown; trace?: unknown; goalSources?: unknown; alignment?: unknown } | undefined;
+    if (data?.version !== 1 || !isBrief(data.brief)) return undefined;
+    const brief = data.brief;
+    const presented: Presented[] = parsePresented(JSON.stringify({ trace: data.trace }));
+    const alignment = ["aligned", "drifting", "unknown"].includes(String(data.alignment)) ? data.alignment as Judgment["alignment"] : "unknown";
+    if ((alignment === "drifting") !== presented.some((row) => row.kind === "drift")) return undefined;
+    return {
+      brief: { goal: cleanText(brief.goal, 140) || "—", done: cleanText(brief.done, 140) || "—",
+        now: cleanText(brief.now, 140) || "—", next: cleanText(brief.next, 140) || "—", blocked: cleanText(brief.blocked, 140) || "—" },
+      goalSources: Array.isArray(data.goalSources) ? data.goalSources.filter((id): id is string => typeof id === "string").slice(0, 4) : [],
+      presented, alignment,
+    };
   }
   return undefined;
 }
@@ -146,7 +130,7 @@ export default function piBrief(pi: ExtensionAPI) {
     }
     modelName = config.model;
     activity = "";
-    const restored = savedBrief(ctx);
+    const restored = savedJudgment(ctx);
     const fallbackSessionId = randomUUID();
     const current = new BriefController((prompt, signal) =>
       completeBrief(ctx.modelRegistry, model, config.model, prompt, routingSessionId(ctx, fallbackSessionId), signal), (brief, changed) => {
@@ -154,7 +138,7 @@ export default function piBrief(pi: ExtensionAPI) {
       if (changed) pi.appendEntry(key, { version: 1, brief, trace: current.presented, goalSources: current.goalSources, alignment: current.alignment }); // Branch-local, excluded from the agent's context.
       activity = current.stats.error ? "update failed" : current.stats.limit ? "limit reached" : "";
       refresh(ctx);
-    }, restored, config.maxCalls, config.maxCostUsd, savedPresented(ctx), savedSources(ctx));
+    }, restored?.brief, config.maxCalls, config.maxCostUsd, restored?.presented, restored);
     controller = current;
     refresh(ctx);
     const outline = outlineFor(ctx, current.goalSources);
