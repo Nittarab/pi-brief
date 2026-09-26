@@ -1,23 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { promptFor } from "../src/brief.ts";
-import { acceptModelGoal, assess, emptyMemory } from "../src/trace.ts";
 import { goalSessions, outlineFor } from "../src/rl/episodes.ts";
 
 const blank = { goal: "—", done: "—", now: "—", next: "—", blocked: "—" };
-
 for (const session of goalSessions) {
-  test(`synthetic session: ${session.name}`, () => {
-    const users = session.users.map((text, index) => ({ id: `u${index}`, text }));
-    const locked = assess(emptyMemory(), { users }).memory.locked;
-    assert.match(locked, session.lock, locked);
-    for (const bad of session.reject) assert.equal(acceptModelGoal(bad, users, locked), "", bad);
-    if (session.accept) {
-      const accepted = acceptModelGoal(session.accept, users, locked);
-      assert.match(accepted, new RegExp(session.must[0] ?? "", "i"));
-    }
-    const prompt = promptFor(blank, [{ type: "user", text: outlineFor(session.users) }], true);
+  test(`goal evidence reaches the prompt: ${session.name}`, () => {
+    const outline = outlineFor(session.users);
+    const prompt = promptFor(blank, [{ type: "user", text: outline }], true);
     assert.match(prompt, /sustained user job/);
-    for (const user of session.users) assert.match(prompt, new RegExp(user.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").slice(0, 40)));
+    assert.match(prompt, /untrusted evidence|UNTRUSTED_DATA/);
+    const payload = JSON.parse(prompt.split("UNTRUSTED_DATA_JSON\n")[1]!);
+    assert.deepEqual(payload.source, JSON.parse(outline));
+    assert.ok(payload.source.users.some((row: { text: string }) => row.text === session.users.at(-1)));
+    assert.doesNotMatch(prompt, /Bad goal:.*standup|must contain the same job noun/);
   });
 }
