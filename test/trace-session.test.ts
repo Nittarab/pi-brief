@@ -11,83 +11,69 @@ process.env.PI_BRIEF_MODEL = "test/brief";
 after(() => { rmSync(home, { recursive: true, force: true }); });
 const { default: extension } = await import("../src/index.ts");
 
-test("simulated session drives the rail without extra model calls", async () => {
+test("one below-editor widget shows the brief and trace without replacing Pi's footer", async () => {
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => void>();
+  const commands = new Map<string, (args: string, ctx: ExtensionContext) => Promise<void>>();
   const calls: string[] = [];
   let branch: unknown[] = [];
-  let rails: string[] = [];
-  let footerCleared = false;
-  let footerDisposals = 0;
-  let component: { render: (width: number) => string[]; dispose?: () => void } | undefined;
-  const commands = new Map<string, (args: string, ctx: ExtensionContext) => Promise<void>>();
+  let lines: string[] = [];
+  let placement = "";
+  let footerCalls = 0;
   const theme = { fg: (_color: string, value: string) => value };
   const ctx = {
     mode: "tui",
     ui: {
-      setStatus() {},
-      setWidget() {},
-      notify() {},
-      setFooter(factory?: (tui: { requestRender: () => void }, theme: { fg: (color: string, value: string) => string }, footerData: unknown) => { render: (width: number) => string[]; dispose?: () => void }) {
-        component?.dispose?.();
-        if (!factory) { footerCleared = true; rails = []; component = undefined; return; }
-        footerCleared = false;
-        component = factory({ requestRender() { rails = component?.render(80) ?? []; } }, theme, {
-          getGitBranch: () => "main", getAvailableProviderCount: () => 1,
-          getExtensionStatuses: () => new Map(), onBranchChange: () => () => { footerDisposals++; },
-        });
-        rails = component.render(80);
+      setStatus() {}, notify() {},
+      setWidget(_key: string, factory?: (_tui: unknown, palette: { fg: (color: string, value: string) => string }) => { render: (width: number) => string[] }, options?: { placement?: string }) {
+        placement = options?.placement ?? "";
+        lines = factory ? factory({}, theme).render(80) : [];
       },
+      setFooter() { footerCalls++; },
     },
     modelRegistry: {
       find: () => ({ id: "brief" }),
       complete: async () => { calls.push("model"); return { content: [{ type: "text", text: JSON.stringify({ goal: "Publish the npm package", done: "—", now: "Review", next: "—", blocked: "—", trace: [{ who: "user", kind: "task", text: "keep one job" }, { who: "agent", kind: "drift", text: "left the brief for publishing" }] }) }], stopReason: "stop", usage: { cost: { total: 0.001 } } }; },
     },
-    getContextUsage: () => ({ tokens: 0, contextWindow: 128_000, percent: 0 }),
-    sessionManager: { getBranch: () => branch, getEntries: () => branch, getCwd: () => home, getSessionName: () => undefined },
+    sessionManager: { getBranch: () => branch },
   } as unknown as ExtensionContext;
   extension({
     on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => void) => { handlers.set(name, handler); return () => {}; },
     appendEntry() {},
     registerCommand(name: string, spec: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) { commands.set(name, spec.handler); },
   } as unknown as ExtensionAPI);
-  const emit = (name: string) => handlers.get(name)?.({}, ctx);
-  handlers.get("session_start")?.({}, ctx);
-  assert.equal(footerCleared, false);
-  assert.match(rails.join("\n"), /◇ reading/);
+  const emit = (name: string, event: unknown = {}) => handlers.get(name)?.(event, ctx);
+
+  emit("session_start");
+  assert.equal(placement, "belowEditor");
+  assert.match(lines[0], /Goal: — · Now: —/);
+  assert.match(lines.join("\n"), /◇ reading/);
+  assert.equal(footerCalls, 0);
 
   branch = [{ id: "u1", type: "message", message: { role: "user", content: "Fix the brief line" } }];
-  handlers.get("before_agent_start")?.({ prompt: "Fix the brief line" }, ctx);
-  handlers.get("tool_execution_start")?.({ toolName: "bash", args: { password: "SECRET" } }, ctx);
-  assert.equal(calls.length, 0, "the live rail does not call the model");
-  assert.doesNotMatch(rails.join("\n"), /SECRET/);
-  assert.match(rails.join("\n"), /◇ reading/);
-  assert.doesNotMatch(rails.join("\n"), /tool|bash|SECRET/);
+  emit("before_agent_start", { prompt: "Fix the brief line" });
+  emit("tool_execution_start", { toolName: "bash", args: { password: "SECRET" } });
+  assert.equal(calls.length, 0, "no per-turn trace call");
+  assert.doesNotMatch(lines.join("\n"), /tool|bash|SECRET/);
 
-  handlers.get("agent_settled")?.({}, ctx);
+  emit("agent_settled");
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(calls.length, 1);
-  assert.match(rails.join("\n"), /keep one job/);
-  assert.match(rails.join("\n"), /left the brief for publishing/);
-  assert.doesNotMatch(rails.join("\n"), /Fix the brief line/);
-
-  branch = [
-    { id: "u1", type: "message", message: { role: "user", content: "Fix the brief line" } },
-    { id: "u2", type: "message", message: { role: "user", content: "instead, add a right rail" } },
-  ];
-  handlers.get("before_agent_start")?.({ prompt: "instead, add a right rail" }, ctx);
-  assert.doesNotMatch(rails.join("\n"), /add a right rail/);
-  assert.equal(calls.length, 1, "a user pivot does not spend a call by itself");
+  assert.match(lines.slice(1).join("\n"), /keep one job/);
+  assert.match(lines.slice(1).join("\n"), /left the brief for publishing/);
 
   branch = [{ id: "u9", type: "message", message: { role: "user", content: "Write the standup" } }];
-  handlers.get("session_tree")?.({}, ctx);
-  assert.match(rails.join("\n"), /↩ Write the standup/);
-  assert.match(rails.join("\n"), /Fix the brief line|add a right rail/);
-  await commands.get("trace")?.("", ctx);
-  assert.equal(footerCleared, true, "/trace restores the built-in status line");
-  assert.equal(footerDisposals, 1, "owned footer releases its branch listener");
-  assert.equal(rails.join("").trim(), "");
-  ctx.ui.setFooter(() => ({ invalidate() {}, render: () => ["other extension footer"] }));
+  emit("session_tree");
+  assert.match(lines.slice(1).join("\n"), /↩ Write the standup/);
+  await commands.get("trace")?.("off", ctx);
+  assert.equal(lines.length, 1, "/trace off leaves only the brief line");
+  assert.equal(footerCalls, 0, "Pi's footer is never touched");
+
   emit("session_start");
-  assert.equal(footerCleared, false, "a disabled trace does not clear another extension's footer");
-  assert.deepEqual(rails, ["other extension footer"]);
+  assert.equal(lines.length, 1, "off stays off across session start");
+  await commands.get("trace")?.("on", ctx);
+  assert.match(lines.slice(1).join("\n"), /◇ reading|keep one job/);
+  assert.equal(footerCalls, 0);
+  emit("session_shutdown");
+  assert.deepEqual(lines, []);
+  assert.equal(footerCalls, 0);
 });

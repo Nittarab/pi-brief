@@ -20,6 +20,7 @@ function harness(mode = "tui", initial: unknown[] = []) {
   const handlers = new Map<string, Handler>();
   const statuses: Array<[string, string | undefined]> = [];
   const widgets: Array<[string, Widget]> = [];
+  const placements: string[] = [];
   const notifications: string[] = [];
   const entries: unknown[] = [];
   let branch = initial;
@@ -30,7 +31,10 @@ function harness(mode = "tui", initial: unknown[] = []) {
   const ctx = {
     mode,
     ui: { setStatus: (key: string, text: string | undefined) => statuses.push([key, text]),
-      setWidget: (key: string, content: Widget) => widgets.push([key, content]),
+      setWidget: (key: string, content: Widget, options?: { placement?: string }) => {
+        widgets.push([key, content]);
+        if (content) placements.push(options?.placement ?? "");
+      },
       notify: (text: string) => notifications.push(text) },
     modelRegistry: { find: (provider: string, model: string) => {
       modelLookups.push(`${provider}/${model}`);
@@ -45,7 +49,7 @@ function harness(mode = "tui", initial: unknown[] = []) {
     },
   } as unknown as ExtensionAPI);
   const emit = (name: string, event: unknown = {}) => handlers.get(name)?.(event, ctx);
-  return { ctx, emit, statuses, widgets, notifications, entries, modelLookups, command: (args: string, name = "brief") => {
+  return { ctx, emit, statuses, widgets, placements, notifications, entries, modelLookups, command: (args: string, name = "brief") => {
     const run = commands.get(name);
     if (!run) throw new Error(`missing command ${name}`);
     return run(args);
@@ -62,11 +66,12 @@ function shown(widgets: Array<[string, Widget]>, width = 160): string {
   return "";
 }
 
-test("brief stays above the editor through work and idle; only metadata and visible text reach summarizer", async () => {
+test("brief stays below the editor through work and idle; only metadata and visible text reach summarizer", async () => {
   const h = harness();
   let prompt = "";
   h.setComplete(async (_model, context) => { prompt = JSON.stringify(context); return response; });
   h.emit("session_start");
+  assert.equal(h.placements.at(-1), "belowEditor");
   assert.match(shown(h.widgets), /Goal: — · Now: —/);
   assert.equal(h.statuses.at(-1)?.[1], undefined, "footer does not repeat the brief");
   h.emit("before_agent_start", { prompt: "ship it" });
@@ -128,7 +133,7 @@ test("tool activity does not replace the stable Goal and Now line", async () => 
   h.emit("session_shutdown");
 });
 
-test("startup summarizes recent visible text and shows the same line above the editor", async () => {
+test("startup summarizes recent visible text and shows the same line below the editor", async () => {
   const h = harness("tui", [
     { type: "message", message: { role: "user", content: [{ type: "text", text: "Ship the footer" }] } },
     { type: "message", message: { role: "assistant", content: [{ type: "text", text: "Footer is visible" }, { type: "thinking", thinking: "SECRET_THOUGHT" }] } },
@@ -174,7 +179,7 @@ test("shows the provider error instead of only the stop reason", async () => {
   h.emit("session_shutdown");
 });
 
-test("failed summary stays visible above the editor after agent settles", async () => {
+test("failed summary stays visible below the editor after agent settles", async () => {
   const h = harness();
   let attempts = 0;
   h.setComplete(async () => { attempts++; return { ...response, stopReason: "error" }; });

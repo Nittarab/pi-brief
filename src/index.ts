@@ -4,7 +4,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { BriefController, briefLine, cleanText, display, isBrief, parsePresented, sessionOutline, type Brief, type Presented } from "./brief.ts";
-import { footerLines } from "./footer.ts";
 import { acceptModelGoal, assess, emptyMemory, emptyRail, isWrapper, phrase, railColor, renderRail, usersFrom, type Rail, type TraceMemory } from "./trace.ts";
 
 const key = "pi-brief";
@@ -92,8 +91,6 @@ export default function piBrief(pi: ExtensionAPI) {
   let pendingUser = "";
   let railWanted = true;
   let displayGoal = "";
-  let traceOpen = false;
-  let paintRail: (() => void) | undefined;
 
   function shownBrief(): Brief {
     const model = controller?.brief ?? { goal: "—", done: "—", now: "—", next: "—", blocked: "—" };
@@ -107,16 +104,17 @@ export default function piBrief(pi: ExtensionAPI) {
     const state = activity === "update failed" || activity === "limit reached" || activity.startsWith("off:") || activity.startsWith("config error")
       ? activity : "";
     const warn = Boolean(rail.drift || rail.left);
-    // One line only, fitted to the row. The footer shares a truncated row.
-    ctx.ui.setStatus(footerKey, undefined);
     ctx.ui.setWidget(widgetKey, (_tui, theme: Theme) => ({
       invalidate() {},
       render(width: number) {
         const text = briefLine(shownBrief(), state, width);
-        return [theme.fg(warn && !state ? "warning" : "accent", text)];
+        const brief = theme.fg(warn && !state ? "warning" : "accent", text);
+        if (!railWanted) return [brief];
+        const trace = renderRail(rail, width, traceLines).filter((line) => line.trim())
+          .map((line) => theme.fg(railColor(line), line));
+        return [brief, ...trace];
       },
-    }));
-    paintRail?.();
+    }), { placement: "belowEditor" });
   }
 
   function refresh(ctx: ExtensionContext) {
@@ -130,31 +128,6 @@ export default function piBrief(pi: ExtensionAPI) {
     displayGoal = acceptModelGoal(controller?.brief.goal ?? "", users, memory.locked) || memory.locked;
     rail = { ...next.rail, presented: controller?.presented ?? [] };
     show(ctx);
-  }
-
-  function closeTrace(ctx: ExtensionContext) {
-    if (!traceOpen) return;
-    traceOpen = false;
-    paintRail = undefined;
-    ctx.ui.setFooter(undefined);
-  }
-
-  function openTrace(ctx: ExtensionContext) {
-    if (ctx.mode !== "tui" || !railWanted || typeof ctx.ui.setFooter !== "function") return;
-    if (traceOpen) { paintRail?.(); return; }
-    traceOpen = true;
-    ctx.ui.setFooter((tui, theme, footerData) => {
-      const unsub = footerData.onBranchChange?.(() => tui.requestRender());
-      paintRail = () => tui.requestRender();
-      return {
-        dispose() { unsub?.(); },
-        invalidate() {},
-        render(width: number) {
-          const trace = renderRail(rail, width, traceLines).filter((line) => line.trim()).map((line) => theme.fg(railColor(line), line));
-          return [...footerLines(ctx, theme, footerData, width), ...trace];
-        },
-      };
-    });
   }
 
   function start(ctx: ExtensionContext) {
@@ -214,14 +187,12 @@ export default function piBrief(pi: ExtensionAPI) {
     memory = emptyMemory();
     rail = emptyRail();
     pendingUser = "";
-    closeTrace(ctx);
+    if (ctx.mode === "tui") ctx.ui.setStatus(footerKey, undefined); // Clear an old build's status once.
     start(ctx);
-    openTrace(ctx);
   });
   pi.on("session_tree", (_event, ctx) => start(ctx));
   pi.on("session_shutdown", (_event, ctx) => {
     controller?.close(); controller = undefined;
-    closeTrace(ctx);
     if (ctx.mode === "tui") {
       ctx.ui.setStatus(footerKey, undefined);
       if ("setWidget" in ctx.ui) ctx.ui.setWidget(widgetKey, undefined);
@@ -259,16 +230,15 @@ export default function piBrief(pi: ExtensionAPI) {
     },
   });
   pi.registerCommand("trace", {
-    description: "Show or hide the trace under the status line",
+    description: "Show or hide the trace in the widget above Pi's status line",
     handler: async (args, ctx) => {
       const action = args.trim();
       if (action && action !== "on" && action !== "off") {
         ctx.ui.notify("Use /trace, /trace on, or /trace off", "warning"); return;
       }
       railWanted = action === "off" ? false : action === "on" ? true : !railWanted;
-      if (!railWanted) closeTrace(ctx);
-      else openTrace(ctx);
-      ctx.ui.notify(railWanted ? "Trace under the status line" : "Trace off", "info");
+      show(ctx);
+      ctx.ui.notify(railWanted ? "Trace above Pi's status line" : "Trace off", "info");
     },
   });
 }
