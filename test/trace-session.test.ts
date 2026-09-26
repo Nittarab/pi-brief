@@ -32,7 +32,7 @@ test("one below-editor widget shows the brief and trace without replacing Pi's f
     },
     modelRegistry: {
       find: () => ({ id: "brief" }),
-      complete: async () => { calls.push("model"); return { content: [{ type: "text", text: JSON.stringify({ goal: "Publish the npm package", done: "—", now: "Review", next: "—", blocked: "—", trace: [{ who: "user", kind: "task", text: "keep one job" }, { who: "agent", kind: "drift", text: "left the brief for publishing" }] }) }], stopReason: "stop", usage: { cost: { total: 0.001 } } }; },
+      complete: async () => { calls.push("model"); return { content: [{ type: "text", text: JSON.stringify({ goal: "Fix the brief line", done: "—", now: "Review", next: "—", blocked: "—", alignment: "drifting", evidence: { goal: ["u1"], pivot: [], drift: ["a1"] }, trace: { pivot: "", drift: "left the brief for publishing", steps: [] } }) }], stopReason: "stop", usage: { cost: { total: 0.001 } } }; },
     },
     sessionManager: { getBranch: () => branch },
   } as unknown as ExtensionContext;
@@ -49,7 +49,8 @@ test("one below-editor widget shows the brief and trace without replacing Pi's f
   assert.match(lines.join("\n"), /◇ reading/);
   assert.equal(footerCalls, 0);
 
-  branch = [{ id: "u1", type: "message", message: { role: "user", content: "Fix the brief line" } }];
+  branch = [{ id: "u1", type: "message", message: { role: "user", content: "Fix the brief line" } },
+    { id: "a1", type: "message", message: { role: "assistant", content: "I will publish the npm package instead" } }];
   emit("before_agent_start", { prompt: "Fix the brief line" });
   emit("tool_execution_start", { toolName: "bash", args: { password: "SECRET" } });
   assert.equal(calls.length, 0, "no per-turn trace call");
@@ -58,12 +59,12 @@ test("one below-editor widget shows the brief and trace without replacing Pi's f
   emit("agent_settled");
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(calls.length, 1);
-  assert.match(lines.slice(1).join("\n"), /keep one job/);
+  assert.match(lines.slice(1).join("\n"), /Fix the brief line/);
   assert.match(lines.slice(1).join("\n"), /left the brief for publishing/);
 
   branch = [{ id: "u9", type: "message", message: { role: "user", content: "Write the standup" } }];
   emit("session_tree");
-  assert.match(lines.slice(1).join("\n"), /↩ Write the standup/);
+  assert.doesNotMatch(lines.join("\n"), /Fix the brief line|left the brief/);
   await commands.get("trace")?.("off", ctx);
   assert.equal(lines.length, 1, "/trace off leaves only the brief line");
   assert.equal(footerCalls, 0, "Pi's footer is never touched");
@@ -71,7 +72,7 @@ test("one below-editor widget shows the brief and trace without replacing Pi's f
   emit("session_start");
   assert.equal(lines.length, 1, "off stays off across session start");
   await commands.get("trace")?.("on", ctx);
-  assert.match(lines.slice(1).join("\n"), /◇ reading|keep one job/);
+  assert.match(lines.slice(1).join("\n"), /◇ reading|Fix the brief line/);
   assert.equal(footerCalls, 0);
   emit("session_shutdown");
   assert.deepEqual(lines, []);

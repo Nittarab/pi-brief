@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Episode } from "./episodes.ts";
+import { sessionOutline } from "../evidence.ts";
 
 export type PublicRow = { instance_id: string; title: string; must: string[]; agent: string };
 
@@ -16,7 +17,10 @@ export function publicEpisodes(rows: PublicRow[]): Episode[] {
       reject: ["Run the daily standup", row.agent],
       must: row.must,
       forbid,
-      outline: ["Active agent trace (latest last):", `- user: ${row.title}`, `- assistant: ${row.agent}`].join("\n"),
+      outline: sessionOutline([
+        { id: "u1", type: "message", message: { role: "user", content: row.title } },
+        { id: "a1", type: "message", message: { role: "assistant", content: row.agent } },
+      ]),
     };
   });
 }
