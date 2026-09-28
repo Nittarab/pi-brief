@@ -90,6 +90,20 @@ test("overlong model prose is bounded without losing a final user constraint or 
   assert.equal(accepted.alignment, "drifting");
 });
 
+test("a user-only update can establish a cited goal while alignment stays unknown", () => {
+  const source = buildEvidence([user("u1", "Diagnose the brief failure")]);
+  const value = candidate();
+  Object.assign(value, { goal: "Diagnose the brief failure", done: "—", now: "Inspect the failure", alignment: "unknown" });
+  value.evidence.drift = []; value.trace.drift = "";
+  const accepted = parseJudgment(JSON.stringify(value), source);
+  assert.equal(accepted.brief.goal, value.goal);
+  assert.equal(accepted.alignment, "unknown");
+  value.alignment = "aligned";
+  assert.throws(() => parseJudgment(JSON.stringify(value), source), /visible assistant evidence/);
+  value.alignment = "unknown"; value.done = "Fixed the parser";
+  assert.throws(() => parseJudgment(JSON.stringify(value), source), /done needs visible assistant evidence/);
+});
+
 test("missing or non-text goal still fails rather than inventing a task", () => {
   const source = buildEvidence(branch);
   assert.throws(() => parseJudgment(JSON.stringify({ ...candidate(), goal: null }), source), /goal must be text/);

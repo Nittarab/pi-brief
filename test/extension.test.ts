@@ -109,6 +109,18 @@ test("new user input invalidates an in-flight reply before settlement and preser
   h.emit("session_shutdown");
 });
 
+test("a user-only branch saves the cited goal without claiming alignment", async () => {
+  const h = harness("tui", [user("Diagnose the brief failure")]);
+  h.setComplete(async () => response({ ...value, goal: "Diagnose the brief failure", now: "Inspect the failure", alignment: "unknown" }));
+  h.emit("session_start"); await tick();
+  assert.equal(h.calls, 1);
+  assert.equal(h.entries[0].brief.goal, "Diagnose the brief failure");
+  assert.equal(h.entries[0].alignment, "unknown");
+  assert.match(h.lines()[0]!, /Goal: Diagnose the brief failure/);
+  await h.command("status"); assert.doesNotMatch(h.notifications.at(-1)!, /last error:/);
+  h.emit("session_shutdown");
+});
+
 test("an overlong goal still updates the widget and saved brief without a paid retry", async () => {
   const h = harness("tui", [user("Fix checkout but do not deploy"), assistant()]);
   h.setComplete(async () => response({ ...value, goal: `Fix checkout ${"using local invoice fixtures ".repeat(8)}but do not deploy` }));
