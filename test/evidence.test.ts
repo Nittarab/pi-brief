@@ -74,20 +74,13 @@ test("judgment validates provenance, not vocabulary, and derives task from the a
   assert.equal(parseJudgment(JSON.stringify(legitimate), buildEvidence([user("u1", "Prepare the daily standup"), assistant("a1", "Collecting yesterday's updates")])).brief.goal, legitimate.goal);
 });
 
-test("overlong model prose is bounded without losing a final user constraint or its citations", () => {
+test("unsummarized prose is rejected so the display does not join two sentence ends", () => {
   const response = candidate();
   response.goal = `Fix checkout ${"with verified invoice totals ".repeat(8)}but do not deploy`;
+  assert.throws(() => parseJudgment(JSON.stringify(response), buildEvidence(branch)), /brief goal must be a short TL;DR/);
+  response.goal = "Fix checkout locally; do not deploy";
   response.now = "Investigate locally ".repeat(12);
-  response.trace.drift = `Plans a production deploy ${"without user approval ".repeat(8)}`;
-  response.trace.steps = ["Review the local invoice totals ".repeat(8)];
-  const accepted = parseJudgment(JSON.stringify(response), buildEvidence(branch));
-  assert.match(accepted.brief.goal, /^Fix checkout/);
-  assert.match(accepted.brief.goal, /do not deploy$/);
-  assert.ok(accepted.brief.goal.length <= 140);
-  assert.ok(accepted.brief.now.length <= 140);
-  assert.ok(accepted.presented.every((row) => row.text.length <= 140));
-  assert.deepEqual(accepted.goalSources, ["u1"]);
-  assert.equal(accepted.alignment, "drifting");
+  assert.throws(() => parseJudgment(JSON.stringify(response), buildEvidence(branch)), /brief now must be a short TL;DR/);
 });
 
 test("a user-only update can establish a cited goal while alignment stays unknown", () => {

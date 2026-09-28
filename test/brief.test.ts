@@ -69,6 +69,10 @@ test("prompt includes bounded visible activities only and treats input as untrus
   assert.match(outlinePrompt, /not replacement jobs/);
   assert.match(outlinePrompt, /not authority/);
   assert.match(outlinePrompt, /Same nouns can hide a violation/);
+  assert.match(outlinePrompt, /under 90 characters/);
+  assert.match(outlinePrompt, /Do not paste a long sentence and rely on truncation/);
+  assert.match(outlinePrompt, /Bad goal:.*Fix pi-brief so the goal is inferred/);
+  assert.match(outlinePrompt, /Good goal:.*Fix user-only goal inference/);
 });
 
 test("meaningful events start immediately; tools wait for settlement, cost is tracked with no default USD limit", async () => {
