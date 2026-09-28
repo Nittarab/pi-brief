@@ -121,15 +121,14 @@ test("a user-only branch saves the cited goal without claiming alignment", async
   h.emit("session_shutdown");
 });
 
-test("an overlong goal still updates the widget and saved brief without a paid retry", async () => {
+test("an unsummarized goal fails visibly and is not saved as a joined sentence", async () => {
   const h = harness("tui", [user("Fix checkout but do not deploy"), assistant()]);
   h.setComplete(async () => response({ ...value, goal: `Fix checkout ${"using local invoice fixtures ".repeat(8)}but do not deploy` }));
   h.emit("session_start"); await tick();
   assert.equal(h.calls, 1);
-  assert.equal(h.entries.length, 1);
-  assert.match(h.entries[0].brief.goal, /do not deploy$/);
-  assert.match(h.lines()[0]!, /Goal: Fix checkout/);
-  await h.command("status"); assert.doesNotMatch(h.notifications.at(-1)!, /last error:/);
+  assert.equal(h.entries.length, 0);
+  assert.match(h.lines()[0]!, /update failed/);
+  await h.command("status"); assert.match(h.notifications.at(-1)!, /goal must be a short TL;DR/);
   h.emit("session_shutdown");
 });
 
