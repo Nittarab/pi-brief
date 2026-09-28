@@ -109,6 +109,18 @@ test("new user input invalidates an in-flight reply before settlement and preser
   h.emit("session_shutdown");
 });
 
+test("an overlong goal still updates the widget and saved brief without a paid retry", async () => {
+  const h = harness("tui", [user("Fix checkout but do not deploy"), assistant()]);
+  h.setComplete(async () => response({ ...value, goal: `Fix checkout ${"using local invoice fixtures ".repeat(8)}but do not deploy` }));
+  h.emit("session_start"); await tick();
+  assert.equal(h.calls, 1);
+  assert.equal(h.entries.length, 1);
+  assert.match(h.entries[0].brief.goal, /do not deploy$/);
+  assert.match(h.lines()[0]!, /Goal: Fix checkout/);
+  await h.command("status"); assert.doesNotMatch(h.notifications.at(-1)!, /last error:/);
+  h.emit("session_shutdown");
+});
+
 test("invalid provenance is visible, counted and not auto-retried; explicit refresh recovers", async () => {
   const h = harness("tui", [user(), assistant()]);
   h.setComplete(async () => response({ ...value, evidence: { goal: ["foreign-branch"], pivot: [], drift: [] } }));

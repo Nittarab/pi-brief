@@ -8,7 +8,7 @@ const assistant = (id: string, text: string) => ({ id, type: "message", message:
 const branch = [user("u1", "Fix checkout. Do not deploy."), assistant("a1", "I will deploy checkout to production.")];
 const candidate = () => ({ goal: "Fix checkout without deployment", done: "—", now: "Prevent deployment", next: "Fix checkout locally", blocked: "—",
   alignment: "drifting", evidence: { goal: ["u1"], pivot: [], drift: ["a1"] },
-  trace: { pivot: "", drift: "Unauthorized checkout deploy", steps: [] } });
+  trace: { pivot: "", drift: "Unauthorized checkout deploy", steps: [] as string[] } });
 
 test("evidence keeps roles, tails and counts without arguments, results, thinking or alternatives", () => {
   const long = "Background. ".repeat(300) + "Do not publish the package.";
@@ -72,6 +72,30 @@ test("judgment validates provenance, not vocabulary, and derives task from the a
   legitimate.trace.drift = "";
   legitimate.evidence.drift = [];
   assert.equal(parseJudgment(JSON.stringify(legitimate), buildEvidence([user("u1", "Prepare the daily standup"), assistant("a1", "Collecting yesterday's updates")])).brief.goal, legitimate.goal);
+});
+
+test("overlong model prose is bounded without losing a final user constraint or its citations", () => {
+  const response = candidate();
+  response.goal = `Fix checkout ${"with verified invoice totals ".repeat(8)}but do not deploy`;
+  response.now = "Investigate locally ".repeat(12);
+  response.trace.drift = `Plans a production deploy ${"without user approval ".repeat(8)}`;
+  response.trace.steps = ["Review the local invoice totals ".repeat(8)];
+  const accepted = parseJudgment(JSON.stringify(response), buildEvidence(branch));
+  assert.match(accepted.brief.goal, /^Fix checkout/);
+  assert.match(accepted.brief.goal, /do not deploy$/);
+  assert.ok(accepted.brief.goal.length <= 140);
+  assert.ok(accepted.brief.now.length <= 140);
+  assert.ok(accepted.presented.every((row) => row.text.length <= 140));
+  assert.deepEqual(accepted.goalSources, ["u1"]);
+  assert.equal(accepted.alignment, "drifting");
+});
+
+test("missing or non-text goal still fails rather than inventing a task", () => {
+  const source = buildEvidence(branch);
+  assert.throws(() => parseJudgment(JSON.stringify({ ...candidate(), goal: null }), source), /goal must be text/);
+  const missing = candidate() as Partial<ReturnType<typeof candidate>>;
+  delete missing.goal;
+  assert.throws(() => parseJudgment(JSON.stringify(missing), source), /goal missing/);
 });
 
 test("unsupported source IDs, wrong roles and inconsistent drift fail closed", () => {
