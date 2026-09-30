@@ -9,7 +9,8 @@ const home = mkdtempSync(join(tmpdir(), "pi-brief-test-"));
 process.env.HOME = home;
 process.env.PI_BRIEF_MODEL = "test/brief";
 after(() => rmSync(home, { recursive: true, force: true }));
-const { default: extension } = await import("../src/index.ts");
+delete process.env.PI_CODING_AGENT_DIR;
+const { default: extension, configured } = await import("../src/index.ts");
 const user = (text = "Fix checkout", id = "u1") => ({ id, type: "message", message: { role: "user", content: text } });
 const assistant = (text = "I am investigating checkout", id = "a1") => ({ id, type: "message", message: { role: "assistant", content: text } });
 const brief = { goal: "Fix checkout", done: "—", now: "Investigate checkout", next: "—", blocked: "—" };
@@ -23,17 +24,19 @@ function harness(mode = "tui", initial: unknown[] = []) {
   const handlers = new Map<string, Handler>();
   const statuses: unknown[] = [], entries: any[] = [], notifications: string[] = [], placements: string[] = [], lookups: string[] = [];
   let branch = initial, calls = 0, widget: Widget;
+  let waitForIdle = async () => {};
   let complete = async (_model: unknown, _context: unknown, _options: unknown) => response();
   const commands = new Map<string, (args: string) => Promise<void>>();
   const ctx = {
     mode,
+    waitForIdle: () => waitForIdle(),
     ui: { setStatus: (...args: unknown[]) => statuses.push(args),
       setWidget: (_key: string, content: Widget, options?: { placement?: string }) => { widget = content; if (content) placements.push(options?.placement ?? ""); },
       notify: (text: string) => notifications.push(text) },
     modelRegistry: { find: (provider: string, model: string) => {
       lookups.push(`${provider}/${model}`);
-      return ["test/brief", "test/alternate", "opencode-go/mimo-v2.6-flash"].includes(`${provider}/${model}`) ? { id: model } : undefined;
-    }, complete: (...args: [unknown, unknown, unknown]) => { calls++; return complete(...args); } },
+      return ["test/brief", "test/alternate", "test/vendor/brief", "opencode-go/mimo-v2.6-flash"].includes(`${provider}/${model}`) ? { id: model } : undefined;
+    }, streamSimple: (...args: [unknown, unknown, unknown]) => { calls++; return { result: () => complete(...args) }; } },
     sessionManager: { getBranch: () => branch, getSessionId: () => "session-123" },
   } as unknown as ExtensionContext;
   extension({ on: (name: string, handler: Handler) => { handlers.set(name, handler); return () => {}; },
@@ -44,7 +47,8 @@ function harness(mode = "tui", initial: unknown[] = []) {
     emit: (name: string, event: unknown = {}) => handlers.get(name)?.(event, ctx),
     command: (args = "", name = "brief") => commands.get(name)!(args),
     get calls() { return calls; }, lines: (width = 160) => widget?.({}, { fg: (_color, text) => text }).render(width) ?? [],
-    setBranch: (next: unknown[]) => { branch = next; }, setComplete: (fn: typeof complete) => { complete = fn; } };
+    setBranch: (next: unknown[]) => { branch = next; }, setComplete: (fn: typeof complete) => { complete = fn; },
+    setWaitForIdle: (fn: typeof waitForIdle) => { waitForIdle = fn; } };
 }
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -186,7 +190,8 @@ test("restored drift alignment agrees with its warning before and after a startu
 test("headless modes neither call providers nor update UI", async () => {
   for (const mode of ["print", "json", "rpc"]) {
     const h = harness(mode, [user(), assistant()]); h.emit("session_start"); h.emit("before_agent_start", { prompt: "request" }); h.emit("agent_settled");
-    await h.command("refresh"); assert.equal(h.calls, 0); assert.deepEqual(h.statuses, []); assert.deepEqual(h.lines(), []);
+    await h.command("refresh"); await h.command("status"); await h.command("on", "trace");
+    assert.equal(h.calls, 0); assert.deepEqual(h.statuses, []); assert.deepEqual(h.lines(), []); assert.deepEqual(h.notifications, []);
   }
 });
 
@@ -204,17 +209,115 @@ test("default and overrides share bounded request options and session routing, w
   process.env.PI_BRIEF_MODEL = "test/brief";
 });
 
-test("config disables calls, rejects bad settings and observes the per-branch call cap", async () => {
+test("config disables calls and rejects invalid model settings", async () => {
   const directory = join(home, ".pi", "agent"); mkdirSync(directory, { recursive: true });
   const path = join(directory, "brief.json"); delete process.env.PI_BRIEF_MODEL;
-  for (const [config, status] of [[{ model: null }, "off: disabled"], [{ model: "missing/model" }, "off: model not found"], [{ maxCostUsd: -1 }, "config error"]] as const) {
-    writeFileSync(path, JSON.stringify(config)); const h = harness("tui", [user(), assistant()]); h.emit("session_start");
-    assert.ok(h.lines()[0]!.includes(status)); assert.equal(h.calls, 0); h.emit("session_shutdown");
+  try {
+    for (const [config, status] of [[{ model: null }, "off: disabled"], [{ model: "missing/model" }, "off: model not found"], [{ model: "invalid" }, "config error"], [[], "config error"]] as const) {
+      writeFileSync(path, JSON.stringify(config)); const h = harness("tui", [user(), assistant()]); h.emit("session_start");
+      assert.ok(h.lines()[0]!.includes(status)); assert.equal(h.calls, 0); h.emit("session_shutdown");
+    }
+  } finally { rmSync(path); process.env.PI_BRIEF_MODEL = "test/brief"; }
+});
+
+test("legacy spending-limit settings are ignored while usage reporting and deduplication remain", async () => {
+  const directory = join(home, ".pi", "agent"); mkdirSync(directory, { recursive: true });
+  const path = join(directory, "brief.json"); delete process.env.PI_BRIEF_MODEL;
+  const h = harness("tui", [user(), assistant()]);
+  try {
+    writeFileSync(path, JSON.stringify({ model: "test/brief", maxCalls: 1, maxCostUsd: 0.0005 }));
+    assert.deepEqual(configured(), { model: "test/brief" });
+    h.emit("session_start"); await tick(); await h.command("refresh");
+    assert.equal(h.calls, 1, "unchanged evidence still does not make another request");
+    h.setBranch([user(), assistant(), assistant("I am checking checkout totals", "a2")]);
+    await h.command("refresh");
+    assert.equal(h.calls, 2, "new evidence updates regardless of old call/cost settings");
+    assert.match(h.lines()[0]!, /Goal: Fix checkout/);
+    await h.command("status");
+    assert.match(h.notifications.at(-1)!, /2 calls.*\$0.00200/);
+    assert.doesNotMatch(h.notifications.at(-1)!, /limit reached/);
+    writeFileSync(path, JSON.stringify({ model: "test/brief", maxCalls: "removed", maxCostUsd: -1 }));
+    assert.deepEqual(configured(), { model: "test/brief" });
+  } finally { h.emit("session_shutdown"); rmSync(path); process.env.PI_BRIEF_MODEL = "test/brief"; }
+});
+
+test("slash-containing model IDs use the exact registry ID", async () => {
+  process.env.PI_BRIEF_MODEL = "test/vendor/brief";
+  try {
+    const h = harness("tui", [user(), assistant()]);
+    h.emit("session_start"); await tick();
+    assert.deepEqual(h.lookups, ["test/vendor/brief"]);
+    assert.equal(h.calls, 1);
+    assert.match(h.lines()[0]!, /Goal: Fix checkout/);
+    h.emit("session_shutdown");
+  } finally { process.env.PI_BRIEF_MODEL = "test/brief"; }
+});
+
+test("brief.json follows Pi's agent-directory override and errors report the actual path", async () => {
+  const directory = join(home, "custom-agent"); mkdirSync(directory, { recursive: true });
+  process.env.PI_CODING_AGENT_DIR = directory;
+  delete process.env.PI_BRIEF_MODEL;
+  try {
+    writeFileSync(join(directory, "brief.json"), JSON.stringify({ model: null }));
+    assert.equal(configured(), undefined);
+    const h = harness("tui", [user(), assistant()]); h.emit("session_start");
+    assert.equal(h.calls, 0);
+    await h.command("status");
+    assert.ok(h.notifications.at(-1)!.includes(join(directory, "brief.json")));
+    assert.match(h.notifications.at(-1)!, /off: disabled/);
+    h.emit("session_shutdown");
+    writeFileSync(join(directory, "brief.json"), JSON.stringify({ model: "test/vendor/brief" }));
+    assert.equal(configured()?.model, "test/vendor/brief");
+  } finally { delete process.env.PI_CODING_AGENT_DIR; process.env.PI_BRIEF_MODEL = "test/brief"; }
+});
+
+test("refresh waits for Pi settlement rather than summarizing an unfinished batch", async () => {
+  const h = harness(); h.emit("session_start");
+  let idle!: () => void;
+  h.setWaitForIdle(() => new Promise((resolve) => { idle = resolve; }));
+  const refreshing = h.command("refresh");
+  h.setBranch([user(), assistant("I am still running tools")]);
+  await tick(); assert.equal(h.calls, 0);
+  h.setBranch([user(), assistant()]); h.emit("agent_settled");
+  idle(); await refreshing;
+  assert.equal(h.calls, 1, "manual refresh reuses the settled evidence");
+  assert.match(h.notifications.at(-1)!, /Goal: Fix checkout/);
+  h.emit("session_shutdown");
+});
+
+test("refresh does not notify or dereference a stale controller after shutdown/navigation", async () => {
+  for (const event of ["session_shutdown", "session_tree"]) {
+    const h = harness("tui", [user(), assistant()]);
+    h.setComplete(async () => new Promise(() => {}));
+    h.emit("session_start");
+    const refreshing = h.command("refresh"); await tick();
+    h.setBranch([]); h.emit(event);
+    await refreshing;
+    assert.deepEqual(h.notifications, []);
+    assert.equal(h.calls, 1);
+    h.emit("session_shutdown");
   }
-  writeFileSync(path, JSON.stringify({ model: "test/brief", maxCalls: 1, maxCostUsd: null }));
-  const h = harness("tui", [user(), assistant()]); h.emit("session_start"); await tick(); await h.command("refresh");
-  assert.equal(h.calls, 1); assert.match(h.lines()[0]!, /limit reached/); h.emit("session_shutdown");
-  rmSync(path); process.env.PI_BRIEF_MODEL = "test/brief";
+});
+
+test("a session replacement during Pi's idle wait cancels refresh before spending", async () => {
+  const h = harness(); h.emit("session_start");
+  let idle!: () => void;
+  h.setWaitForIdle(() => new Promise((resolve) => { idle = resolve; }));
+  const refreshing = h.command("refresh");
+  h.emit("session_shutdown"); idle(); await refreshing;
+  assert.equal(h.calls, 0); assert.deepEqual(h.notifications, []);
+});
+
+test("queued users, continuations and pre-navigation invalidate stale replies without a new call", async () => {
+  for (const [name, event] of [["message_start", { message: { role: "user", content: "New task" } }], ["agent_start", {}], ["session_before_tree", {}]] as const) {
+    const h = harness("tui", [user(), assistant()]);
+    let resolve!: (reply: ReturnType<typeof response>) => void;
+    h.setComplete(async () => new Promise((r) => { resolve = r; }));
+    h.emit("session_start"); h.emit(name, event);
+    resolve(response()); await tick();
+    assert.equal(h.calls, 1); assert.equal(h.entries.length, 0);
+    h.emit("session_shutdown");
+  }
 });
 
 test("provider stop reason and detail remain visible without retry", async () => {

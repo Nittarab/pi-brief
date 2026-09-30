@@ -8,6 +8,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 const home = mkdtempSync(join(tmpdir(), "pi-brief-trace-"));
 process.env.HOME = home;
 process.env.PI_BRIEF_MODEL = "test/brief";
+delete process.env.PI_CODING_AGENT_DIR;
 after(() => { rmSync(home, { recursive: true, force: true }); });
 const { default: extension } = await import("../src/index.ts");
 
@@ -32,7 +33,7 @@ test("one below-editor widget shows the brief and trace without replacing Pi's f
     },
     modelRegistry: {
       find: () => ({ id: "brief" }),
-      complete: async () => { calls.push("model"); return { content: [{ type: "text", text: JSON.stringify({ goal: "Fix the brief line", done: "—", now: "Review", next: "—", blocked: "—", alignment: "drifting", evidence: { goal: ["u1"], pivot: [], drift: ["a1"] }, trace: { pivot: "", drift: "left the brief for publishing", steps: [] } }) }], stopReason: "stop", usage: { cost: { total: 0.001 } } }; },
+      streamSimple: () => ({ result: async () => { calls.push("model"); return { content: [{ type: "text", text: JSON.stringify({ goal: "Fix the brief line", done: "—", now: "Review", next: "—", blocked: "—", alignment: "drifting", evidence: { goal: ["u1"], pivot: [], drift: ["a1"] }, trace: { pivot: "", drift: "left the brief for publishing", steps: [] } }) }], stopReason: "stop", usage: { cost: { total: 0.001 } } }; } }),
     },
     sessionManager: { getBranch: () => branch },
   } as unknown as ExtensionContext;

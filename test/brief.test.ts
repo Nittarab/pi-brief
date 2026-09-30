@@ -75,40 +75,46 @@ test("prompt includes bounded visible activities only and treats input as untrus
   assert.match(outlinePrompt, /Good goal:.*Fix user-only goal inference/);
 });
 
-test("meaningful events start immediately; tools wait for settlement, cost is tracked with no default USD limit", async () => {
+test("meaningful events start immediately; tools wait for settlement and usage is tracked", async () => {
   const changes: boolean[] = [];
   const prompts: string[] = [];
   const c = new BriefController(async (prompt) => { prompts.push(prompt); return { text: json, cost: 0.06 }; },
-    (_brief, changed) => changes.push(changed), undefined, 2);
+    (_brief, changed) => changes.push(changed));
   c.add({ type: "user", text: "a" }, true);
   assert.equal(prompts.length, 1);
-  await c.flush(); // In-flight work is already running, not duplicated.
+  await c.waitForIdle();
   c.add({ type: "tool", text: "bash: finished" });
   assert.equal(prompts.length, 1);
   c.add({ type: "assistant", text: "third" });
   c.trigger();
   assert.equal(prompts.length, 2);
-  await c.flush();
+  await c.waitForIdle();
   assert.deepEqual(changes, [true, false]);
   assert.equal(c.stats.cost, 0.12);
-  assert.equal(c.stats.limit, true);
   c.add({ type: "user", text: "next" }, true);
-  assert.equal(c.stats.pending, 1);
-  assert.equal(prompts.length, 2);
+  await c.waitForIdle();
+  assert.equal(c.stats.pending, 0);
+  assert.equal(c.stats.calls, 3);
+  assert.equal(prompts.length, 3);
   c.close();
 });
 
-test("optional observed USD cap blocks subsequent calls, including explicit refresh", async () => {
-  let calls = 0;
-  const c = new BriefController(async () => { calls++; return { text: json, cost: 0.06 }; }, () => {}, undefined, 80, 0.05);
-  c.add({ type: "user", text: "request" }, true);
-  await c.flush();
-  c.add({ type: "assistant", text: "answer" });
-  c.trigger();
-  await c.flush(true);
-  assert.equal(calls, 1);
-  assert.equal(c.stats.limit, true);
-  assert.equal(c.stats.pending, 1);
+test("usage reporting does not stop updates after 80 calls or high reported cost", async () => {
+  const reply = JSON.stringify({ ...summary, alignment: "aligned", evidence: { goal: ["u1"], pivot: [], drift: [] },
+    trace: { pivot: "", drift: "", steps: [] } });
+  const c = new BriefController(async () => ({ text: reply, cost: 1 }), () => {});
+  for (let index = 0; index < 85; index++) {
+    c.revise(sessionOutline([
+      { id: "u1", type: "message", message: { role: "user", content: "Ship brief" } },
+      { id: `a${index}`, type: "message", message: { role: "assistant", content: `Update ${index}` } },
+    ]));
+    await c.waitForIdle();
+  }
+  assert.equal(c.stats.calls, 85);
+  assert.equal(c.stats.cost, 85);
+  assert.equal(c.stats.pending, 0);
+  assert.equal(c.stats.error, undefined);
+  assert.equal(c.brief.goal, summary.goal);
   c.close();
 });
 
@@ -130,6 +136,28 @@ test("failure retains evidence but never silently retries; explicit retry and ne
   c.trigger();
   assert.equal(calls, 3, "new completed activity can start another request after failure");
   c.close();
+});
+
+test("idle wait covers coalesced calls and releases immediately on close", async () => {
+  const resolvers: Array<(value: { text: string; cost: number }) => void> = [];
+  const c = new BriefController(async () => new Promise((resolve) => resolvers.push(resolve)), () => {});
+  await c.waitForIdle();
+  c.add({ type: "user", text: "request" }, true);
+  let idle = false;
+  const waiting = c.waitForIdle().then(() => { idle = true; });
+  c.add({ type: "assistant", text: "result" }, true);
+  resolvers[0]!({ text: json, cost: 0 });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(resolvers.length, 2);
+  assert.equal(idle, false, "queued work is part of the same wait");
+  resolvers[1]!({ text: json, cost: 0 });
+  await waiting;
+  assert.equal(idle, true);
+  c.add({ type: "user", text: "next" }, true);
+  const closing = c.waitForIdle();
+  c.close();
+  await closing;
+  await c.waitForIdle();
 });
 
 test("one in flight coalesces settled activity and closes without applying stale replies", async () => {

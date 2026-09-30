@@ -24,17 +24,15 @@ if (values.live) {
   const { completeBrief } = await import("../src/model.ts");
   const config = configured();
   if (!config) throw new Error("Brief model is disabled; set PI_BRIEF_MODEL or brief.json before evaluation");
-  if (config.maxCalls < corpus.cases.length) throw new Error("Configured maxCalls is smaller than the corpus; raise it deliberately or use offline packets");
   const registry = new ModelRegistry(await ModelRuntime.create());
-  const [provider, modelId] = config.model.split("/");
-  const model = registry.find(provider, modelId);
+  const slash = config.model.indexOf("/");
+  const model = registry.find(config.model.slice(0, slash), config.model.slice(slash + 1));
   if (!model) throw new Error(`Model ${config.model} not found; check Pi's registry`);
   const artifact = { model: config.model, promptVersion, revision: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
     dirty: Boolean(execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }).trim()), provenance: corpus.provenance, cost: 0, cases: [] };
-  const cap = Math.min(maxCost, config.maxCostUsd ?? Infinity);
   emit(artifact); // Prove the evidence file is writable before any paid request.
   for (const item of corpus.cases) {
-    if (artifact.cases.length >= maxCalls || artifact.cost >= cap) { process.exitCode = 1; break; }
+    if (artifact.cases.length >= maxCalls || artifact.cost >= maxCost) { process.exitCode = 1; break; }
     const input = caseInput(item), started = Date.now();
     try {
       const result = await completeBrief(registry, model, config.model, input.prompt, randomUUID(), new AbortController().signal);

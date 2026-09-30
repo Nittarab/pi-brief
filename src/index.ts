@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { BriefController, briefLine, cleanText, display, isBrief, parsePresented, sessionOutline, type Brief, type Presented } from "./brief.ts";
 import { emptyRail, railColor, renderRail, type Rail } from "./trace.ts";
 import { completeBrief, defaultModel } from "./model.ts";
@@ -12,13 +11,13 @@ const key = "pi-brief";
 // Older builds wrote this footer key. Clear it so the line is not shown twice.
 const footerKey = " pi-brief";
 const widgetKey = "pi-brief";
-const configPath = join(homedir(), ".pi", "agent", "brief.json");
+const configPath = () => join(getAgentDir(), "brief.json");
 
-type Config = { model: string; maxCalls: number; maxCostUsd: number | null };
+type Config = { model: string };
 
 export function configured(): Config | undefined {
   let settings: unknown = {};
-  try { settings = JSON.parse(readFileSync(configPath, "utf8")); }
+  try { settings = JSON.parse(readFileSync(configPath(), "utf8")); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
@@ -26,14 +25,8 @@ export function configured(): Config | undefined {
   const data = settings as Record<string, unknown>;
   const model = process.env.PI_BRIEF_MODEL?.trim() || (data.model === undefined ? defaultModel : data.model);
   if (model === null) return undefined; // Explicit opt-out: { "model": null }.
-  if (typeof model !== "string" || !/^[^\s/]+\/[^\s/]+$/.test(model)) throw new Error("model must be provider/model or null");
-  const maxCalls = data.maxCalls === undefined ? 80 : data.maxCalls;
-  if (typeof maxCalls !== "number" || !Number.isSafeInteger(maxCalls) || maxCalls < 1) throw new Error("invalid maxCalls");
-  const maxCostUsd = data.maxCostUsd === undefined ? null : data.maxCostUsd;
-  if (maxCostUsd !== null && (typeof maxCostUsd !== "number" || !Number.isFinite(maxCostUsd) || maxCostUsd <= 0)) {
-    throw new Error("invalid maxCostUsd");
-  }
-  return { model, maxCalls, maxCostUsd };
+  if (typeof model !== "string" || !/^[^\s/]+\/[^\s]+$/.test(model)) throw new Error("model must be provider/model or null");
+  return { model };
 }
 
 function routingSessionId(ctx: ExtensionContext, fallback: string): string {
@@ -80,7 +73,7 @@ export default function piBrief(pi: ExtensionAPI) {
 
   function show(ctx: ExtensionContext) {
     if (ctx.mode !== "tui") return;
-    const state = activity === "update failed" || activity === "limit reached" || activity.startsWith("off:") || activity.startsWith("config error")
+    const state = activity === "update failed" || activity.startsWith("off:") || activity.startsWith("config error")
       ? activity : "";
     const warn = Boolean(rail.drift || rail.left);
     ctx.ui.setWidget(widgetKey, (_tui, theme: Theme) => ({
@@ -136,9 +129,9 @@ export default function piBrief(pi: ExtensionAPI) {
       completeBrief(ctx.modelRegistry, model, config.model, prompt, routingSessionId(ctx, fallbackSessionId), signal), (brief, changed) => {
       if (controller !== current) return; // A switched session/branch cannot write to the active branch.
       if (changed) pi.appendEntry(key, { version: 1, brief, trace: current.presented, goalSources: current.goalSources, alignment: current.alignment }); // Branch-local, excluded from the agent's context.
-      activity = current.stats.error ? "update failed" : current.stats.limit ? "limit reached" : "";
+      activity = current.stats.error ? "update failed" : "";
       refresh(ctx);
-    }, restored?.brief, config.maxCalls, config.maxCostUsd, restored?.presented, restored);
+    }, restored?.brief, restored?.presented, restored);
     controller = current;
     refresh(ctx);
     const outline = outlineFor(ctx, current.goalSources);
@@ -158,39 +151,56 @@ export default function piBrief(pi: ExtensionAPI) {
       if ("setWidget" in ctx.ui) ctx.ui.setWidget(widgetKey, undefined);
     }
   });
-  pi.on("before_agent_start", (_event, ctx) => {
+  function invalidate(ctx: ExtensionContext) {
     controller?.invalidate();
     if (ctx.mode === "tui") refresh(ctx);
+  }
+  pi.on("before_agent_start", (_event, ctx) => invalidate(ctx));
+  // Retries/continuations and queued steering can bypass before_agent_start.
+  pi.on("agent_start", (_event, ctx) => invalidate(ctx));
+  pi.on("message_start", (event, ctx) => {
+    if (event.message.role === "user") invalidate(ctx);
   });
+  // Navigation can await another extension or a branch summary before session_tree.
+  pi.on("session_before_tree", (_event, ctx) => invalidate(ctx));
   pi.on("agent_settled", (_event, ctx) => {
     if (!controller) return;
-    activity = controller.stats.error ? "update failed" : controller.stats.limit ? "limit reached" : "";
+    activity = controller.stats.error ? "update failed" : "";
     refresh(ctx);
     controller.revise(outlineFor(ctx, controller.goalSources));
   });
   pi.registerCommand("brief", {
     description: "Show the session brief; /brief status shows model, calls, cost and errors; /brief refresh retries pending activity",
+    getArgumentCompletions: (prefix) => ["status", "refresh"].filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value })),
     handler: async (args, ctx) => {
+      if (ctx.mode !== "tui") return;
       const action = args.trim();
       if (action && action !== "refresh" && action !== "status") {
         ctx.ui.notify("Use /brief, /brief status, or /brief refresh", "warning"); return;
       }
-      if (!controller) {
-        ctx.ui.notify(`Brief off. Set PI_BRIEF_MODEL=provider/model or change ${configPath}.`, "info"); return;
+      const current = controller;
+      if (!current) {
+        ctx.ui.notify(`Brief ${activity || "off"}. Set PI_BRIEF_MODEL=provider/model or change ${configPath()}.`, "info"); return;
       }
       if (action === "refresh") {
-        controller.revise(outlineFor(ctx, controller.goalSources), true);
-        while (controller.stats.running) await new Promise((resolve) => setImmediate(resolve));
+        await ctx.waitForIdle(); // Never summarize an unfinished tool batch.
+        if (controller !== current) return;
+        current.revise(outlineFor(ctx, current.goalSources), true);
+        await current.waitForIdle();
+        if (controller !== current) return; // Reload/navigation invalidates this command's context.
+        refresh(ctx);
       }
-      const s = controller.stats;
+      const s = current.stats;
       ctx.ui.notify(action === "status"
-        ? `${modelName} · ${s.calls} calls · $${s.cost.toFixed(5)} · ${s.pending} pending · alignment: ${controller.alignment}${s.limit ? " · limit reached" : ""}${s.error ? ` · last error: ${s.error}` : ""}`
-        : display(controller.brief).join("\n"), "info");
+        ? `${modelName} · ${s.calls} calls · $${s.cost.toFixed(5)} · ${s.pending} pending · alignment: ${current.alignment}${s.error ? ` · last error: ${s.error}` : ""}`
+        : display(current.brief).join("\n"), "info");
     },
   });
   pi.registerCommand("trace", {
     description: "Show or hide the trace in the widget above Pi's status line",
+    getArgumentCompletions: (prefix) => ["on", "off"].filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value })),
     handler: async (args, ctx) => {
+      if (ctx.mode !== "tui") return;
       const action = args.trim();
       if (action && action !== "on" && action !== "off") {
         ctx.ui.notify("Use /trace, /trace on, or /trace off", "warning"); return;

@@ -86,13 +86,12 @@ export class BriefController {
   private shown: Presented[] = [];
   private revision = 0;
   private judgment: Judgment | undefined;
+  private idleWaiters = new Set<() => void>();
 
   constructor(
     private readonly summarize: Summarize,
     private readonly onChange: (brief: Brief, changed: boolean) => void,
     initial?: Brief,
-    private readonly maxCalls = 80,
-    private readonly maxCostUsd: number | null = null,
     initialPresented: Presented[] = [],
     private readonly initialProvenance?: Pick<Judgment, "goalSources" | "alignment">,
   ) {
@@ -104,8 +103,17 @@ export class BriefController {
   get presented(): Presented[] { return this.shown.map((step) => ({ ...step })); }
   get goalSources(): string[] { return [...(this.judgment?.goalSources ?? this.initialProvenance?.goalSources ?? [])]; }
   get alignment(): Judgment["alignment"] { return this.judgment?.alignment ?? this.initialProvenance?.alignment ?? "unknown"; }
-  get stats() { return { calls: this.calls, cost: this.cost, error: this.error, pending: this.pending.length, running: this.running,
-    limit: this.calls >= this.maxCalls || (this.maxCostUsd !== null && this.cost >= this.maxCostUsd) }; }
+  get stats() { return { calls: this.calls, cost: this.cost, error: this.error, pending: this.pending.length, running: this.running }; }
+
+  waitForIdle(): Promise<void> {
+    if (this.closed || !this.running) return Promise.resolve();
+    return new Promise((resolve) => this.idleWaiters.add(resolve));
+  }
+
+  private releaseWaiters(): void {
+    for (const resolve of this.idleWaiters) resolve();
+    this.idleWaiters.clear();
+  }
 
   // A new user turn invalidates old work without spending a call before settlement.
   invalidate(): void { this.revision++; this.pending = []; this.ready = false; this.sentOutline = ""; this.inFlightOutline = ""; }
@@ -139,7 +147,7 @@ export class BriefController {
 
   async flush(retry = false): Promise<void> {
     if (retry) { this.failed = false; this.ready = true; }
-    if (this.closed || this.running || !this.pending.length || this.failed || this.stats.limit) return;
+    if (this.closed || this.running || !this.pending.length || this.failed) return;
     this.ready = false;
     const activity = this.pending, outline = this.outlineMode, revision = this.revision;
     this.pending = [];
@@ -177,6 +185,7 @@ export class BriefController {
       this.running = false;
       this.inFlightOutline = "";
       if (this.ready) void this.flush();
+      if (!this.running) this.releaseWaiters();
     }
   }
 
@@ -184,5 +193,6 @@ export class BriefController {
     this.closed = true;
     this.invalidate();
     this.abort?.abort();
+    this.releaseWaiters();
   }
 }

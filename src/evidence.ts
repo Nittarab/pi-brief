@@ -5,6 +5,9 @@ export type EvidenceRecord = {
   role: "user" | "assistant" | "toolResult";
   text: string;
   tools?: string[];
+  nestedTools?: { name: string; status: "ok" | "error" | "unfinished" }[];
+  omittedNestedTools?: number;
+  nestedToolsIncomplete?: boolean;
   skills?: string[];
   isError?: boolean;
   truncated?: boolean;
@@ -31,6 +34,29 @@ export function visibleText(content: unknown): string {
   }).join(" ");
 }
 
+// Pi 0.99 records codemode/MCP calls on the parent result. Never serialize their args or errors.
+function nestedToolEvidence(value: unknown): Pick<EvidenceRecord, "nestedTools" | "omittedNestedTools" | "nestedToolsIncomplete"> {
+  if (!value || typeof value !== "object") return {};
+  const data = value as { calls?: unknown; complete?: unknown };
+  const calls = Array.isArray(data.calls) ? data.calls : [];
+  const nestedTools: NonNullable<EvidenceRecord["nestedTools"]> = [];
+  let omittedNestedTools = 0;
+  for (const raw of calls) {
+    if (!raw || typeof raw !== "object") continue;
+    const call = raw as { name?: unknown; status?: unknown };
+    if (typeof call.name !== "string" || !["ok", "error", "unfinished"].includes(String(call.status))) continue;
+    const name = cleanText(call.name, 40);
+    if (!name) continue;
+    if (nestedTools.length < 8) nestedTools.push({ name, status: call.status as "ok" | "error" | "unfinished" });
+    else omittedNestedTools++;
+  }
+  return {
+    ...(nestedTools.length ? { nestedTools } : {}),
+    ...(omittedNestedTools ? { omittedNestedTools } : {}),
+    ...(data.complete === false ? { nestedToolsIncomplete: true } : {}),
+  };
+}
+
 function bounded(text: string, max: number): { text: string; truncated?: boolean } {
   if (text.length <= max) return { text };
   const head = Math.floor((max - 15) / 2);
@@ -43,7 +69,7 @@ export function buildEvidence(branch: unknown[], anchors: string[] = []): Eviden
   let wrappers = 0;
   for (const [index, raw] of branch.entries()) {
     if (!raw || typeof raw !== "object") continue;
-    const entry = raw as { id?: string; type?: string; message?: { role?: string; content?: unknown; toolName?: string; isError?: boolean } };
+    const entry = raw as { id?: string; type?: string; message?: { role?: string; content?: unknown; toolName?: string; isError?: boolean; nestedCalls?: unknown } };
     if (entry.type !== "message" || !entry.message) continue;
     const message = entry.message;
     const id = typeof entry.id === "string" && entry.id && entry.id.length <= 128 ? entry.id : `entry-${index}`;
@@ -65,7 +91,8 @@ export function buildEvidence(branch: unknown[], anchors: string[] = []): Eviden
       const text = cleanText(visibleText(message.content), Infinity);
       if (text || tools.length) activity.push({ id, order: index, role: "assistant", ...bounded(text, 900), ...(tools.length ? { tools } : {}) });
     } else if (message.role === "toolResult") {
-      activity.push({ id, order: index, role: "toolResult", text: "", tools: [cleanText(message.toolName ?? "tool", 40)], isError: message.isError === true });
+      activity.push({ id, order: index, role: "toolResult", text: "", tools: [cleanText(message.toolName ?? "tool", 40)], isError: message.isError === true,
+        ...nestedToolEvidence(message.nestedCalls) });
     }
   }
   // Keep task origins, cited refinements and the newest requests. Do not let a tool burst evict user intent.

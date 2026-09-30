@@ -4,11 +4,17 @@ A short **Goal + Now** line for Pi, with a five-field brief and optional trace.
 
 pi-brief watches the active session, asks the configured model for a compact judgment, checks that judgment against session evidence, and shows the accepted result below the editor. It does not steer the agent or add the brief to the agent's context.
 
-Personal extension by Nittarab for Pi 0.87.1. It is not a Weft plugin and is not published on npm.
+Personal extension by Nittarab, tested against **Pi 0.99.1**. It is not a Weft plugin.
 
 ## Install
 
-Requires Pi 0.87.1 and Node.js 22.19+.
+Requires Pi 0.99.1 and Node.js 22.19+.
+
+```sh
+pi install npm:pi-brief
+```
+
+Or install from GitHub:
 
 ```sh
 pi install git:github.com/Nittarab/pi-brief
@@ -22,29 +28,35 @@ pi -e /absolute/path/to/pi-brief
 
 The package declares `pi.extensions: ["./src/index.ts"]`. An installed extension runs with your user privileges. Read the source before installing it.
 
-After `pi update --extensions`, reload or restart Pi. An already-open session does not load the new code by itself.
+After `pi update --extensions`, run `/reload` or restart Pi. An already-open session does not load the new code by itself.
+
+### Pi 0.99 support
+
+- Provider-neutral model calls use Pi's `streamSimple()` runtime, including custom providers and virtual-model routing.
+- Codemode/MCP nested calls contribute bounded tool names and statuses, never arguments, error text, or result payloads.
+- Configuration follows `PI_CODING_AGENT_DIR`; model IDs may contain slashes.
+- Refresh waits for agent settlement and cancels safely across reloads and navigation. Commands include argument completion.
+- Pi supplies the host packages through wildcard peers; development dependencies test the published 0.99.1 packages. Older Pi versions are not covered by the current tests.
 
 ## Model calls and cost
 
 The default model is `opencode-go/mimo-v2.6-flash`. If that model is available and authenticated in Pi, pi-brief sends bounded session evidence to it automatically. There is no separate opt-in.
 
-The default limit is 80 calls per session branch. There is **no USD cap** unless you set one. If the model is missing, the line shows `off: model not found` and makes no request.
+There are no runtime call or spending limits. If the model is missing, the line shows `off: model not found` and makes no request.
 
 Set `PI_BRIEF_MODEL='provider/model-id'`, or create `~/.pi/agent/brief.json`:
 
 ```json
 {
-  "model": "provider/model-id",
-  "maxCalls": 80,
-  "maxCostUsd": null
+  "model": "provider/model-id"
 }
 ```
 
-`{ "model": null }` disables calls. The environment variable overrides only the model in the file. Limits in the file still apply.
+`{ "model": null }` disables calls. The environment variable overrides the model in the file. Legacy `maxCalls` and `maxCostUsd` settings are ignored.
 
-Model IDs must match Pi's registry exactly. There is no provider fallback. Configure the provider's authentication in Pi. Invalid settings produce a visible error and no request.
+Model IDs must match Pi's registry exactly. There is no provider fallback. Configure the provider's authentication in Pi. Invalid model settings produce a visible error and no request.
 
-`maxCalls` must be a positive integer. `maxCostUsd` must be `null` or a finite number above zero.
+When `PI_CODING_AGENT_DIR` is set, configuration is read from `<agent-dir>/brief.json` instead of `~/.pi/agent/brief.json`. A model such as `openrouter/vendor/model-id` is looked up using the full `vendor/model-id`, not only its first segment.
 
 ## Use
 
@@ -67,7 +79,7 @@ Trace marks:
 
 The widget uses at most seven lines. It keeps the task and warning before less important decisions.
 
-`/brief refresh` does not spend again when the evidence has not changed or the branch is empty. It does spend when it retries a failed update or summarizes new evidence.
+`/brief refresh` waits for Pi to finish running before selecting evidence. It does not spend again when the evidence has not changed or the branch is empty. It does spend when it retries a failed update or summarizes new evidence.
 
 ## What the brief means
 
@@ -100,34 +112,35 @@ The path is:
 - Skill names, user IDs, and arguments remain. Skill bodies and locations are removed.
 - Other branches, thinking, raw tool arguments, and raw tool results are excluded.
 - Tool names and error flags are metadata, not proof of a result.
+- A tool result retains at most eight nested-call names and statuses (`ok`, `error`, `unfinished`), with omitted counts and Pi's incomplete-record flag. Nested arguments, error text, structured output, details, and usage are excluded.
 
 Missing middle text can still hide an important constraint. Omission is not evidence of alignment or drift.
 
 ## Update lifecycle
 
 - A summary runs after the agent settles or when the active branch changes. It does not run on every tool event.
-- One request is in flight. A later user turn invalidates its result.
+- One request is in flight. Later user turns, queued steering, and automatic continuations invalidate its result.
 - Branch or session navigation closes the old request and restores only the selected branch.
 - A new accepted trace replaces the old one, so an old drift warning does not remain without support.
 - Old stored briefs without the current evidence version are not restored. The active branch is summarized again.
 - A failed update keeps the last accepted brief, shows the error, and does not retry automatically.
 - Print, JSON, and RPC modes make no summary calls and show no widget.
 
-Each call allows 700 output tokens, times out after 30 seconds, and has zero transport retries. The current prompt version is `evidence-v5`.
+Each call allows 700 output tokens, has a 30-second cancellation deadline, and has zero transport retries. The deadline also releases the extension if a custom provider ignores cancellation; it cannot guarantee that the provider stops billing. The current prompt version is `evidence-v6`.
 
 The model must return short lines: Goal and Now under 90 characters, other brief fields under 110, and trace lines under 80. Overlong prose is rejected. It is not joined with an ellipsis and presented as a summary.
 
-## Privacy and spending limits
+## Privacy and usage reporting
 
 **Calls are enabled by default when the configured model is available. Disable or change the model before starting Pi if you do not trust its provider or do not want automatic calls.**
 
-A request can include user prompts, visible assistant text, tool names, tool error flags, the previous brief, and the Pi session ID. OpenCode Go requires the session ID for routing. Other providers may ignore it.
+A request can include user prompts, visible assistant text, tool names, nested-call statuses, tool error flags, the previous brief, and the Pi session ID. OpenCode Go requires the session ID for routing. Other providers may ignore it.
 
 The request does not include raw tool arguments, raw tool output, or thinking. Prompts and visible answers can still contain secrets. The instruction to omit secrets is **not redaction**. Do not enable pi-brief for a sensitive session unless you accept disclosure to the selected provider.
 
 Generated briefs, trace rows, and source IDs are stored as custom session entries. They are excluded from the agent's context. Protect session files. The extension labels untrusted content as data and checks citations, but it cannot prevent a wrong or adversarial model judgment.
 
-`maxCostUsd` is checked against **reported cost after each call**. One call can exceed the remaining limit. A timeout or provider exception can bill without returned usage. This is a soft ceiling, not a guaranteed spending cap. With `maxCostUsd: null`, cost is tracked but not capped. Counts and observed cost reset when the branch or session changes. An aborted call may still bill.
+`/brief status` tracks calls and reported cost without limiting updates. Counts and observed cost reset when the branch or session changes. A timeout, aborted call, or provider exception may bill without returned usage. A virtual model's router may make additional requests that are not included in the returned summary usage; review the router before enabling it.
 
 ## Development
 
@@ -138,7 +151,9 @@ npm test
 npm pack --dry-run
 ```
 
-Tests cover evidence bounds, privacy exclusions, citations, branch restoration, superseded replies, TL;DR limits, headless behavior, and cost limits. Passing tests do **not** prove live model accuracy.
+`npm publish` runs the typecheck and complete test suite through `prepublishOnly` before uploading. It requires npm authentication with publish permission for `pi-brief`.
+
+Tests cover evidence bounds, nested-tool privacy, citations, branch restoration, superseded replies, refresh/navigation races, cancellation, TL;DR limits, headless behavior, and usage reporting. Integration tests load the package with Pi's published resource loader and bind real sessions in TUI, print, JSON, and RPC modes. An in-memory provider also checks runtime authentication and virtual-model routing, without network or paid model calls. Passing tests do **not** prove live model accuracy.
 
 The semantic fixture is `test/fixtures/judgment-cases.json`. It contains 14 synthetic cases. References are withheld from the summarizer. Judge packets include the original fixture so the judge can detect information lost by the evidence pipeline. This is a regression set, not a held-out generalization benchmark.
 
@@ -148,7 +163,7 @@ Generate offline requests with no model call:
 node --experimental-transform-types scripts/goal-eval.mjs --output /tmp/brief-requests.json
 ```
 
-An approved live run uses the configured Pi model and the same adapter as the extension. It requires both budgets and an output path:
+An approved live run uses the configured Pi model and the same adapter as the extension. Unlike the extension, this development script requires explicit call/cost budgets and an output path:
 
 ```sh
 node --experimental-transform-types scripts/goal-eval.mjs --live \
