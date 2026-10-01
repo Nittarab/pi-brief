@@ -4,9 +4,18 @@ Notable changes to pi-brief, newest first. Dates refer to Git release tags, not 
 
 ## [Unreleased]
 
+## [0.3.18] — 2026-10-01
+
 ### Added
 
-- This changelog, linked from the README and included in future npm packages.
+- This changelog, linked from the README and included in the package.
+- Opt-in, local-only diagnostics for dogfooding across sessions: individual attempt outcomes, fixed failure codes, cancellation, durations, versions/build fingerprints, and returned costs. No prompt, evidence, reply or raw-error logging.
+- An offline `scripts/brief-report.mjs` / `npm run diagnostics` report with metadata-only JSON exports, Linux/Mac aggregation, deduplication, session/time filtering, and incomplete-history warnings.
+- Owner-only diagnostic storage with 1 MiB rotation, retention of the newest 10 files, 30-day expiry, and visible logging-error status. Logging failures do not change brief validation, retries, or model behavior.
+
+### Testing
+
+- Added mocked diagnostics coverage for privacy, permissions, retention, repair/exhaustion, cancellation and late usage, logging failures, offline Linux/Mac aggregation, and the published Pi loader. The full suite contains 127 tests; these do not establish live model accuracy or complete historical failure coverage.
 
 ## [0.3.17] — 2026-10-01
 
@@ -48,6 +57,7 @@ Notable changes to pi-brief, newest first. Dates refer to Git release tags, not 
 
 - Added in-memory provider and published Pi runtime integration coverage for authentication, routing, resource loading, sessions, and headless modes without network or paid model calls.
 
-[Unreleased]: https://github.com/Nittarab/pi-brief/compare/v0.3.17...HEAD
+[Unreleased]: https://github.com/Nittarab/pi-brief/compare/v0.3.18...HEAD
+[0.3.18]: https://github.com/Nittarab/pi-brief/compare/v0.3.17...v0.3.18
 [0.3.17]: https://github.com/Nittarab/pi-brief/compare/v0.3.16...v0.3.17
 [0.3.16]: https://github.com/Nittarab/pi-brief/compare/v0.3.15...v0.3.16

@@ -5,7 +5,8 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext, type Theme } fro
 import { BriefController, briefLine, cleanText, display, isBrief, parsePresented, sessionOutline, type Brief, type Presented } from "./brief.ts";
 import { emptyRail, railColor, renderRail, type Rail } from "./trace.ts";
 import { completeBrief, defaultModel } from "./model.ts";
-import type { Judgment } from "./judgment.ts";
+import { promptVersion, type Judgment } from "./judgment.ts";
+import { DiagnosticLog, type CancellationCode, type DiagnosticCode } from "./diagnostics.ts";
 
 const key = "pi-brief";
 // Older builds wrote this footer key. Clear it so the line is not shown twice.
@@ -13,7 +14,13 @@ const footerKey = " pi-brief";
 const widgetKey = "pi-brief";
 const configPath = () => join(getAgentDir(), "brief.json");
 
-type Config = { model: string };
+type Config = { model: string; diagnostics?: true };
+
+export function diagnosticsRequested(): boolean {
+  if (process.env.PI_BRIEF_DIAGNOSTICS !== undefined) return process.env.PI_BRIEF_DIAGNOSTICS === "1";
+  try { return JSON.parse(readFileSync(configPath(), "utf8"))?.diagnostics === true; }
+  catch { return false; } // Never enable logging on ambiguous or unreadable configuration.
+}
 
 export function configured(): Config | undefined {
   let settings: unknown = {};
@@ -23,10 +30,12 @@ export function configured(): Config | undefined {
   }
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) throw new Error("brief.json must be an object");
   const data = settings as Record<string, unknown>;
+  if (data.diagnostics !== undefined && typeof data.diagnostics !== "boolean") throw new Error("diagnostics must be boolean");
+  if (process.env.PI_BRIEF_DIAGNOSTICS !== undefined && !["0", "1"].includes(process.env.PI_BRIEF_DIAGNOSTICS)) throw new Error("PI_BRIEF_DIAGNOSTICS must be 0 or 1");
   const model = process.env.PI_BRIEF_MODEL?.trim() || (data.model === undefined ? defaultModel : data.model);
   if (model === null) return undefined; // Explicit opt-out: { "model": null }.
   if (typeof model !== "string" || !/^[^\s/]+\/[^\s]+$/.test(model)) throw new Error("model must be provider/model or null");
-  return { model };
+  return { model, ...(diagnosticsRequested() ? { diagnostics: true } : {}) };
 }
 
 function routingSessionId(ctx: ExtensionContext, fallback: string): string {
@@ -63,6 +72,7 @@ const traceLines = 6;
 export default function piBrief(pi: ExtensionAPI) {
   let controller: BriefController | undefined;
   let modelName: string | undefined;
+  let diagnostics: DiagnosticLog | undefined;
   let activity = "";
   let rail: Rail = emptyRail();
   let railWanted = true;
@@ -95,16 +105,29 @@ export default function piBrief(pi: ExtensionAPI) {
     show(ctx);
   }
 
-  function start(ctx: ExtensionContext) {
-    controller?.close();
+  function diagnosticsStatus(): string {
+    return !diagnostics ? "diagnostics: off" : diagnostics.error ? `diagnostics: unavailable (${diagnostics.error})`
+      : `diagnostics: on (${diagnostics.directory}) · build: ${diagnostics.build}`;
+  }
+
+  function recordSetup(ctx: ExtensionContext, code: DiagnosticCode, model = "none/unknown") {
+    diagnostics?.bind(routingSessionId(ctx, "unknown"), ctx.sessionManager.getLeafId?.() ?? "root", model, promptVersion)({
+      event: "setup", operation: randomUUID(), attempt: 0, repair: false, outcome: "failed", code, durationMs: 0,
+    });
+  }
+
+  function start(ctx: ExtensionContext, reason: CancellationCode = "navigation") {
+    controller?.close(reason);
     controller = undefined;
     modelName = undefined;
     activity = "";
     rail = emptyRail();
-    if (ctx.mode !== "tui") return; // No invisible requests in print, JSON, or RPC.
+    if (ctx.mode !== "tui") { diagnostics = undefined; return; } // No invisible requests or new diagnostics in headless modes.
+    diagnostics = diagnosticsRequested() ? diagnostics ?? new DiagnosticLog(getAgentDir()) : undefined;
     let config: Config | undefined;
     try { config = configured(); }
     catch (error) {
+      recordSetup(ctx, "config");
       activity = `config error: ${cleanText(error instanceof Error ? error.message : String(error), 30)}`;
       show(ctx);
       return;
@@ -117,6 +140,7 @@ export default function piBrief(pi: ExtensionAPI) {
     const slash = config.model.indexOf("/");
     const model = ctx.modelRegistry.find(config.model.slice(0, slash), config.model.slice(slash + 1));
     if (!model) {
+      recordSetup(ctx, "model_missing", config.model);
       activity = "off: model not found";
       show(ctx);
       return;
@@ -125,34 +149,37 @@ export default function piBrief(pi: ExtensionAPI) {
     activity = "";
     const restored = savedJudgment(ctx);
     const fallbackSessionId = randomUUID();
+    const currentLog = diagnostics;
     const current = new BriefController((prompt, signal, reportCost) =>
       completeBrief(ctx.modelRegistry, model, config.model, prompt, routingSessionId(ctx, fallbackSessionId), signal, reportCost), (brief, changed) => {
       if (controller !== current) return; // A switched session/branch cannot write to the active branch.
       if (changed) pi.appendEntry(key, { version: 1, brief, trace: current.presented, goalSources: current.goalSources, alignment: current.alignment }); // Branch-local, excluded from the agent's context.
       activity = current.stats.error ? "update failed" : "";
       refresh(ctx);
-    }, restored?.brief, restored?.presented, restored);
+    }, restored?.brief, restored?.presented, restored, currentLog ? () => currentLog.bind(
+      routingSessionId(ctx, fallbackSessionId), ctx.sessionManager.getLeafId?.() ?? ctx.sessionManager.getBranch().at(-1)?.id ?? "root", config.model, promptVersion,
+    ) : undefined);
     controller = current;
     refresh(ctx);
     const outline = outlineFor(ctx, current.goalSources);
     if (outline) current.revise(outline);
   }
 
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", (event, ctx) => {
     rail = emptyRail();
     if (ctx.mode === "tui") ctx.ui.setStatus(footerKey, undefined); // Clear an old build's status once.
-    start(ctx);
+    start(ctx, event.reason === "reload" ? "reload" : "navigation");
   });
   pi.on("session_tree", (_event, ctx) => start(ctx));
-  pi.on("session_shutdown", (_event, ctx) => {
-    controller?.close(); controller = undefined;
+  pi.on("session_shutdown", (event, ctx) => {
+    controller?.close(event.reason === "reload" ? "reload" : event.reason === "quit" || !event.reason ? "shutdown" : "navigation"); controller = undefined;
     if (ctx.mode === "tui") {
       ctx.ui.setStatus(footerKey, undefined);
       if ("setWidget" in ctx.ui) ctx.ui.setWidget(widgetKey, undefined);
     }
   });
-  function invalidate(ctx: ExtensionContext) {
-    controller?.invalidate();
+  function invalidate(ctx: ExtensionContext, reason: CancellationCode = "superseded") {
+    controller?.invalidate(reason);
     if (ctx.mode === "tui") refresh(ctx);
   }
   pi.on("before_agent_start", (_event, ctx) => invalidate(ctx));
@@ -162,9 +189,9 @@ export default function piBrief(pi: ExtensionAPI) {
     if (event.message.role === "user") invalidate(ctx);
   });
   // Navigation can await another extension or a branch summary before replacing the active context.
-  pi.on("session_before_tree", (_event, ctx) => invalidate(ctx));
-  pi.on("session_before_switch", (_event, ctx) => invalidate(ctx));
-  pi.on("session_before_fork", (_event, ctx) => invalidate(ctx));
+  pi.on("session_before_tree", (_event, ctx) => invalidate(ctx, "navigation"));
+  pi.on("session_before_switch", (_event, ctx) => invalidate(ctx, "navigation"));
+  pi.on("session_before_fork", (_event, ctx) => invalidate(ctx, "navigation"));
   pi.on("agent_settled", (_event, ctx) => {
     if (!controller) return;
     activity = controller.stats.error ? "update failed" : "";
@@ -182,7 +209,7 @@ export default function piBrief(pi: ExtensionAPI) {
       }
       const current = controller;
       if (!current) {
-        ctx.ui.notify(`Brief ${activity || "off"}. Set PI_BRIEF_MODEL=provider/model or change ${configPath()}.`, "info"); return;
+        ctx.ui.notify(`Brief ${activity || "off"}. Set PI_BRIEF_MODEL=provider/model or change ${configPath()}. ${diagnosticsStatus()}.`, "info"); return;
       }
       if (action === "refresh") {
         await ctx.waitForIdle(); // Never summarize an unfinished tool batch.
@@ -196,7 +223,7 @@ export default function piBrief(pi: ExtensionAPI) {
       const state = s.failed ? "failed input retained; /brief refresh to retry" : s.repairing ? `repairing (call ${s.attempt}/3)`
         : s.running ? "summarizing" : "idle";
       ctx.ui.notify(action === "status"
-        ? `${modelName} · ${s.calls} calls · $${s.cost.toFixed(5)} · ${s.pending} pending · ${state} · alignment: ${current.alignment}${s.error ? ` · last error: ${s.error}` : ""}`
+        ? `${modelName} · ${s.calls} calls · $${s.cost.toFixed(5)} · ${s.pending} pending · ${state} · alignment: ${current.alignment}${s.error ? ` · last error: ${s.error}` : ""} · ${diagnosticsStatus()}`
         : display(current.brief).join("\n"), "info");
     },
   });

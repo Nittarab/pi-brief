@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { diagnosticDirectory, fingerprint } from "../src/diagnostics.ts";
+import { diagnosticReport, readDiagnostics } from "../src/diagnostic-report.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -10,7 +12,7 @@ process.env.HOME = home;
 process.env.PI_BRIEF_MODEL = "test/brief";
 after(() => rmSync(home, { recursive: true, force: true }));
 delete process.env.PI_CODING_AGENT_DIR;
-const { default: extension, configured } = await import("../src/index.ts");
+const { default: extension, configured, diagnosticsRequested } = await import("../src/index.ts");
 const user = (text = "Fix checkout", id = "u1") => ({ id, type: "message", message: { role: "user", content: text } });
 const assistant = (text = "I am investigating checkout", id = "a1") => ({ id, type: "message", message: { role: "assistant", content: text } });
 const brief = { goal: "Fix checkout", done: "—", now: "Investigate checkout", next: "—", blocked: "—" };
@@ -404,6 +406,117 @@ test("queued users, continuations and pre-navigation invalidate stale replies wi
     assert.equal(h.calls, 1); assert.equal(h.entries.length, 0);
     h.emit("session_shutdown");
   }
+});
+
+test("diagnostics are opt-in, visible in status, and do not pollute session entries or model inputs", async () => {
+  const directory = join(home, "diagnostics-agent"); mkdirSync(directory, { recursive: true });
+  process.env.PI_CODING_AGENT_DIR = directory;
+  try {
+    const disabled = harness("tui", [user(), assistant()]);
+    disabled.emit("session_start"); await tick();
+    assert.equal(existsSync(diagnosticDirectory(directory)), false);
+    await disabled.command("status"); assert.match(disabled.notifications.at(-1)!, /diagnostics: off/);
+    disabled.emit("session_shutdown");
+    writeFileSync(join(directory, "brief.json"), JSON.stringify({ diagnostics: true }));
+    assert.equal(diagnosticsRequested(), true);
+    const h = harness("tui", [user("Fix checkout SECRET_USER"), assistant()]);
+    const prompts: string[] = [];
+    h.setComplete(async (_model, context) => {
+      prompts.push(JSON.stringify(context));
+      return prompts.length === 1 ? response({ ...value, now: "SECRET_REPLY ".repeat(20) }) : response();
+    });
+    h.emit("session_start"); await tick();
+    const report = diagnosticReport(await readDiagnostics([diagnosticDirectory(directory)]));
+    assert.equal(h.calls, 2);
+    assert.equal(report.totals.recovered, 1);
+    assert.equal(report.totals.reportedCostUsd, 0.002);
+    assert.equal(report.records[0]?.session, fingerprint("session-123"));
+    assert.equal(h.entries.length, 1);
+    assert.deepEqual(Object.keys(h.entries[0]).sort(), ["alignment", "brief", "goalSources", "trace", "version"]);
+    assert.doesNotMatch(JSON.stringify(report), /SECRET_|session-123/);
+    assert.doesNotMatch(prompts.join("\n"), /installation-id|brief-diagnostics|operation_start|attempt_end/);
+    await h.command("status"); assert.match(h.notifications.at(-1)!, /diagnostics: on .*brief-diagnostics/);
+    h.emit("session_shutdown");
+  } finally { delete process.env.PI_CODING_AGENT_DIR; }
+});
+
+test("diagnostic branch identity is frozen before navigation, including late usage", async () => {
+  const directory = join(home, "diagnostics-navigation"); mkdirSync(directory, { recursive: true });
+  process.env.PI_CODING_AGENT_DIR = directory;
+  try {
+    writeFileSync(join(directory, "brief.json"), JSON.stringify({ diagnostics: true }));
+    const h = harness("tui", [user(), assistant()]);
+    let resolve!: (value: ReturnType<typeof response>) => void;
+    h.setComplete(async () => new Promise((r) => { resolve = r; }));
+    h.emit("session_start");
+    h.setBranch([user("Prepare standup", "u2")]); h.emit("session_before_tree"); await tick();
+    h.setComplete(async () => response({ ...value, goal: "Prepare standup", alignment: "unknown", evidence: { goal: ["u2"], pivot: [], drift: [] } }));
+    h.emit("session_tree"); await tick();
+    resolve(response()); await tick();
+    const report = diagnosticReport(await readDiagnostics([diagnosticDirectory(directory)]));
+    const cancelled = report.records.find((row) => row.event === "operation_end" && row.code === "navigation")!;
+    const old = report.records.filter((row) => row.operation === cancelled.operation);
+    assert.ok(old.every((row) => row.branch === fingerprint("a1")));
+    assert.equal(old.find((row) => row.event === "usage")?.late, true);
+    assert.equal(report.totals.cancelled, 1);
+    assert.equal(report.totals.accepted, 1);
+    assert.equal(report.totals.reportedCostUsd, 0.002);
+    assert.equal(h.entries.length, 1);
+    h.emit("session_shutdown");
+  } finally { delete process.env.PI_CODING_AGENT_DIR; }
+});
+
+test("diagnostics record setup failures and log errors cannot break valid briefs", async () => {
+  const directory = join(home, "diagnostics-setup"); mkdirSync(directory, { recursive: true });
+  process.env.PI_CODING_AGENT_DIR = directory;
+  try {
+    writeFileSync(join(directory, "brief.json"), JSON.stringify({ diagnostics: true }));
+    process.env.PI_BRIEF_MODEL = "missing/brief";
+    const missing = harness("tui", [user(), assistant()]); missing.emit("session_start"); await tick();
+    assert.equal(missing.calls, 0);
+    assert.equal(diagnosticReport(await readDiagnostics([diagnosticDirectory(directory)])).byCode.model_missing, 1);
+    missing.emit("session_shutdown");
+    process.env.PI_BRIEF_MODEL = "test/brief";
+    rmSync(diagnosticDirectory(directory), { recursive: true, force: true });
+    writeFileSync(diagnosticDirectory(directory), "not a directory");
+    const h = harness("tui", [user(), assistant()]); h.emit("session_start"); await tick();
+    assert.equal(h.calls, 1); assert.equal(h.entries.length, 1);
+    await h.command("status"); assert.match(h.notifications.at(-1)!, /diagnostics: unavailable/);
+    assert.doesNotMatch(h.notifications.at(-1)!, /last error/);
+    h.emit("session_shutdown");
+  } finally { delete process.env.PI_CODING_AGENT_DIR; process.env.PI_BRIEF_MODEL = "test/brief"; }
+});
+
+test("headless modes do not create diagnostics even with logging enabled", async () => {
+  for (const mode of ["print", "json", "rpc"]) {
+    const directory = join(home, `diagnostics-${mode}`); mkdirSync(directory, { recursive: true });
+    process.env.PI_CODING_AGENT_DIR = directory;
+    try {
+      writeFileSync(join(directory, "brief.json"), JSON.stringify({ diagnostics: true }));
+      const h = harness(mode, [user(), assistant()]); h.emit("session_start"); await tick();
+      assert.equal(h.calls, 0);
+      assert.equal(existsSync(diagnosticDirectory(directory)), false);
+      h.emit("session_shutdown");
+    } finally { delete process.env.PI_CODING_AGENT_DIR; }
+  }
+});
+
+test("diagnostics config and environment overrides are explicit and validated", () => {
+  const directory = join(home, "diagnostics-config"); mkdirSync(directory, { recursive: true });
+  process.env.PI_CODING_AGENT_DIR = directory;
+  try {
+    const path = join(directory, "brief.json");
+    writeFileSync(path, JSON.stringify({ diagnostics: true }));
+    assert.deepEqual(configured(), { model: "test/brief", diagnostics: true });
+    process.env.PI_BRIEF_DIAGNOSTICS = "0";
+    assert.deepEqual(configured(), { model: "test/brief" });
+    process.env.PI_BRIEF_DIAGNOSTICS = "1";
+    writeFileSync(path, JSON.stringify({ diagnostics: false }));
+    assert.deepEqual(configured(), { model: "test/brief", diagnostics: true });
+    process.env.PI_BRIEF_DIAGNOSTICS = "yes"; assert.throws(() => configured(), /must be 0 or 1/);
+    delete process.env.PI_BRIEF_DIAGNOSTICS;
+    writeFileSync(path, JSON.stringify({ diagnostics: "yes" })); assert.throws(() => configured(), /must be boolean/);
+  } finally { delete process.env.PI_CODING_AGENT_DIR; delete process.env.PI_BRIEF_DIAGNOSTICS; }
 });
 
 test("provider stop reason and detail remain visible without retry", async () => {

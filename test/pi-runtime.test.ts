@@ -1,6 +1,8 @@
 // No network or paid model calls: exercise the published Pi loader, session and provider runtime.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { diagnosticDirectory } from "../src/diagnostics.ts";
+import { diagnosticReport, readDiagnostics } from "../src/diagnostic-report.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +15,7 @@ import {
 import { completeBrief } from "../src/model.ts";
 import { briefSystemPrompt } from "../src/judgment.ts";
 
+const packageVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const home = mkdtempSync(join(tmpdir(), "pi-brief-runtime-"));
 process.env.HOME = home;
 process.env.PI_CODING_AGENT_DIR = home;
@@ -82,6 +85,7 @@ test("published Pi runtime resolves auth and normalizes direct and virtual-model
 });
 
 test("published Pi loader and session bind the package in TUI, print, JSON and RPC modes", async () => {
+  writeFileSync(join(home, "brief.json"), JSON.stringify({ diagnostics: true }));
   for (const mode of ["tui", "print", "json", "rpc"] as const) {
     const { runtime, registry, requests } = await runtimeFixture();
     const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false }, packages: [] });
@@ -113,6 +117,11 @@ test("published Pi loader and session bind the package in TUI, print, JSON and R
         assert.equal(requests[0]?.options?.sessionId, sessionManager.getSessionId());
         const saved = sessionManager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === "pi-brief");
         assert.equal(saved.length, 1);
+        const diagnostics = diagnosticReport(await readDiagnostics([diagnosticDirectory(home)]));
+        assert.equal(diagnostics.totals.accepted, 1);
+        assert.equal(diagnostics.totals.attempts, 1);
+        assert.equal(diagnostics.totals.reportedCostUsd, 0.001);
+        assert.equal(diagnostics.records[0]?.version, packageVersion);
         assert.ok(uiCalls.includes("pi-brief:shown"));
         assert.equal(sessionManager.buildSessionProjection().messages.some((message) => message.role === "custom"), false,
           "brief entries must not participate in agent context");

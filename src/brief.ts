@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { sliceByColumn, visibleWidth } from "@earendil-works/pi-tui";
+import { BriefCancellation, failureCode, validationCode, type CancellationCode, type DiagnosticCode, type DiagnosticEvent, type DiagnosticObserver, type DiagnosticSink } from "./diagnostics.ts";
 import { cleanText, type Evidence } from "./evidence.ts";
 import { parseBriefFields, parseJudgment, promptFor, repairPromptFor, type Judgment } from "./judgment.ts";
 export { cleanText, visibleText, sessionOutline } from "./evidence.ts";
@@ -13,6 +15,7 @@ const fields = ["goal", "done", "now", "next", "blocked"] as const;
 const blank: Brief = { goal: "—", done: "—", now: "—", next: "—", blocked: "—" };
 export const maxSummaryCalls = 3;
 export const operationTimeoutMs = 75_000;
+type AttemptState = { number: number; repair: boolean; startedAt: number; started: boolean; finished: boolean };
 
 export function isBrief(value: unknown): value is Brief {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -99,6 +102,7 @@ export class BriefController {
     initial?: Brief,
     initialPresented: Presented[] = [],
     private readonly initialProvenance?: Pick<Judgment, "goalSources" | "alignment">,
+    private readonly diagnostics?: DiagnosticObserver,
   ) {
     this.summary = initial ? { ...initial } : { ...blank };
     this.shown = initialPresented.map((step) => ({ ...step }));
@@ -122,9 +126,9 @@ export class BriefController {
   }
 
   // A new user turn invalidates old work without spending a call before settlement.
-  invalidate(): void {
+  invalidate(reason: CancellationCode = "superseded"): void {
     this.revision++;
-    this.abort?.abort(new Error("brief update superseded"));
+    this.abort?.abort(new BriefCancellation(reason));
     this.pending = [];
     this.ready = false;
     this.failed = false;
@@ -151,7 +155,7 @@ export class BriefController {
     this.pending = [{ type: "user", text: outline }];
     this.outlineMode = true;
     this.revision++;
-    this.abort?.abort(new Error("brief update superseded"));
+    this.abort?.abort(new BriefCancellation("superseded"));
     this.failed = false;
     this.trigger();
   }
@@ -162,7 +166,13 @@ export class BriefController {
     void this.flush();
   }
 
-  private async request(prompt: string, signal: AbortSignal): Promise<SummaryResult> {
+  private diagnosticSink(): DiagnosticSink {
+    let sink: DiagnosticSink | undefined;
+    try { sink = this.diagnostics?.(); } catch { /* Observability cannot affect model work. */ }
+    return (event) => { try { sink?.(event); } catch { /* No retry or brief failure on logging errors. */ } };
+  }
+
+  private async request(prompt: string, signal: AbortSignal, operation: string, state: AttemptState, record: DiagnosticSink): Promise<SummaryResult> {
     signal.throwIfAborted();
     let onAbort!: () => void;
     const aborted = new Promise<never>((_resolve, reject) => {
@@ -171,11 +181,19 @@ export class BriefController {
     });
     try {
       this.calls++;
+      state.started = true;
+      state.startedAt = Date.now();
+      record({ event: "attempt_start", operation, attempt: state.number, repair: state.repair, outcome: "running", code: "none", durationMs: 0 });
       // Account before the stale/abort gate. The adapter can report late usage even after cancellation.
       let reported = false;
       const reportCost = (cost: number) => {
         if (!Number.isFinite(cost) || cost < 0) throw new Error("invalid model cost");
-        if (!reported) { this.cost += cost; reported = true; }
+        if (!reported) {
+          this.cost += cost;
+          reported = true;
+          record({ event: "usage", operation, attempt: state.number, repair: state.repair, outcome: "running", code: "none",
+            durationMs: Math.max(0, Date.now() - state.startedAt), costUsd: cost, late: state.finished });
+        }
       };
       const result = this.summarize(prompt, signal, reportCost).then((result) => {
         reportCost(result.cost);
@@ -200,6 +218,16 @@ export class BriefController {
     this.abort = abort;
     const deadline = AbortSignal.timeout(operationTimeoutMs);
     const signal = AbortSignal.any([abort.signal, deadline]);
+    const record = this.diagnosticSink(), operation = randomUUID(), startedAt = Date.now();
+    let active: AttemptState | undefined;
+    let outcome: DiagnosticEvent["outcome"] = "failed", code: DiagnosticCode = "input";
+    const finishAttempt = (result: DiagnosticEvent["outcome"], reason: DiagnosticCode) => {
+      if (!active?.started || active.finished) return;
+      active.finished = true;
+      record({ event: "attempt_end", operation, attempt: active.number, repair: active.repair, outcome: result, code: reason,
+        durationMs: Math.max(0, Date.now() - active.startedAt) });
+    };
+    record({ event: "operation_start", operation, attempt: 0, repair: false, outcome: "running", code: "none", durationMs: 0 });
     try {
       // Freeze both evidence and previous brief for the entire validation-and-repair operation.
       const source = outline ? JSON.parse(activity[0]!.text) as Evidence : undefined;
@@ -213,7 +241,9 @@ export class BriefController {
         this.attempt = attempt;
         this.repairing = prompt !== original;
         if (this.repairing) this.onChange(this.brief, false); // Retain the last accepted brief during repair.
-        const result = await this.request(prompt, signal);
+        active = { number: attempt, repair: this.repairing, startedAt: Date.now(), started: false, finished: false };
+        code = "internal";
+        const result = await this.request(prompt, signal, operation, active, record);
         if (this.closed || abort.signal.aborted || revision !== this.revision) return;
         signal.throwIfAborted();
         // Transport, authentication and provider failures are not output-validation failures.
@@ -227,22 +257,31 @@ export class BriefController {
           presented = judgment?.presented ?? parsePresented(result.text);
         } catch (error) {
           const validationError = error instanceof Error ? error.message : String(error);
-          prompt = repairPromptFor(original, result.text, validationError);
+          code = result.repairable ? "output_tokens" : validationCode(error);
+          finishAttempt("rejected", code);
+          try { prompt = repairPromptFor(original, result.text, validationError); }
+          catch (boundsError) { code = "repair_bounds"; throw boundsError; }
           if (attempt === maxSummaryCalls) {
             this.retryPrompt = { original, prompt }; // Bounded feedback for an explicit retry, never an automatic call.
             throw new Error(`invalid brief after ${maxSummaryCalls} calls: ${validationError}; /brief refresh to retry`);
           }
           continue;
         }
+        finishAttempt("accepted", "none");
+        code = "internal";
         const changed = JSON.stringify(judgment) !== JSON.stringify(this.judgment) || JSON.stringify(presented) !== JSON.stringify(this.shown) || fields.some((field) => next[field] !== this.summary[field]);
         this.shown = presented; // Empty is a valid update; never retain stale drift.
         this.summary = next;
         this.judgment = judgment;
         if (outline) this.sentOutline = activity[0]?.text ?? "";
         this.onChange(this.brief, changed);
+        outcome = "accepted";
+        code = "none";
         return;
       }
     } catch (error) {
+      if (deadline.aborted && !abort.signal.aborted) code = "operation_timeout";
+      else if (active?.started && !active.finished) code = failureCode(error);
       if (!this.closed && !abort.signal.aborted && revision === this.revision) {
         this.error = deadline.aborted ? "brief update timed out after 75 seconds; /brief refresh to retry"
           : cleanText(error instanceof Error ? error.message : String(error), 240);
@@ -252,6 +291,13 @@ export class BriefController {
         this.onChange(this.brief, false);
       }
     } finally {
+      if (abort.signal.aborted || revision !== this.revision || this.closed) {
+        code = abort.signal.reason instanceof BriefCancellation ? abort.signal.reason.code : "superseded";
+        outcome = code === "superseded" || code === "navigation" ? "superseded" : "cancelled";
+      }
+      finishAttempt(outcome, code);
+      record({ event: "operation_end", operation, attempt: active?.started ? active.number : 0, repair: active?.repair ?? false,
+        outcome, code, durationMs: Math.max(0, Date.now() - startedAt) });
       if (this.abort === abort) this.abort = undefined;
       this.running = false;
       this.attempt = 0;
@@ -262,10 +308,9 @@ export class BriefController {
     }
   }
 
-  close(): void {
+  close(reason: CancellationCode = "shutdown"): void {
     this.closed = true;
-    this.invalidate();
-    this.abort?.abort();
+    this.invalidate(reason);
     this.releaseWaiters();
   }
 }

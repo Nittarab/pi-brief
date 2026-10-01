@@ -148,6 +148,60 @@ Generated briefs, trace rows, and source IDs are stored as custom session entrie
 
 `/brief status` counts every attempt and its reported cost, including rejected replies and late returned usage after cancellation, without a session-wide spending limit. Counts and observed cost reset when the branch or session changes. A timeout, aborted call, or provider exception may bill without returned usage. A virtual model's router may make additional requests that are not included in the returned summary usage; review the router before enabling it.
 
+## Local diagnostics and dogfooding
+
+Diagnostics are **off by default**. To retain failures across sessions on this machine, add `"diagnostics": true` to your existing `<agent-dir>/brief.json` (normally `~/.pi/agent/brief.json`), preserving your model setting:
+
+```json
+{
+  "model": "opencode-go/mimo-v2.6-flash",
+  "diagnostics": true
+}
+```
+
+`PI_BRIEF_DIAGNOSTICS=1` enables logging and `PI_BRIEF_DIAGNOSTICS=0` disables it, overriding the file. Run `/reload` after changing the extension or configuration. **Reload may trigger normal paid summary calls; logging itself makes no model calls.** `/brief status` shows whether diagnostics are off, on, or unavailable due to a filesystem error, plus a source-build fingerprint when enabled.
+
+Logs live in `<agent-dir>/brief-diagnostics/`, independently of session storage. They cover operations and individual attempts: starts, accepted/rejected/failed outcomes, cancellation/navigation/reload, elapsed time, fixed failure codes, and returned costs (including late usage). Setup failures such as a missing model are also recorded when logging can be enabled. Provider error categories are best-effort classifications, not stored provider messages.
+
+Logs contain the package version, source-build and prompt versions, a random installation ID, platform (`linux`/`darwin`), model ID, and hashed session/branch identifiers. **No prompts, evidence, previous briefs, model replies, raw errors, thinking, tool data, hostnames, or session paths are logged.** Logs are local only and excluded from agent/model context. The directory is owner-only (`0700`) and files are owner-only (`0600`) on Linux/Mac. Metadata can still be sensitive; protect any exports.
+
+Log files rotate at 1 MiB. The newest 10 files are retained and files older than 30 days are pruned on startup/writes: roughly 10 MiB per installation, with possible temporary overshoot from concurrent Pi processes. Logging is best-effort; crashes, retention and filesystem failures can leave gaps. Logging errors never cause model retries or replace an accepted brief. Disabling logging stops new operations from being recorded; already-recorded operations may still report late usage. Print, JSON and RPC modes create no new diagnostic operations.
+
+### Offline reports (Linux and Mac)
+
+From a checkout:
+
+```sh
+npm run diagnostics -- --details
+npm run diagnostics -- --session YOUR_PI_SESSION_ID
+npm run diagnostics -- --since 2026-10-01T00:00:00Z
+```
+
+Or run the packaged script directly, without Pi or provider credentials:
+
+```sh
+node --experimental-transform-types /path/to/pi-brief/scripts/brief-report.mjs --details
+```
+
+It defaults to `<PI_CODING_AGENT_DIR or ~/.pi/agent>/brief-diagnostics/`. `--logs FILE_OR_DIR` selects another location and can be repeated. Directories read only pi-brief's named JSONL log files, without recursion; select exported JSON reports explicitly with `--logs FILE`. `--session` accepts the ID from `/session` or a hashed key shown in the report. Reports distinguish failed operations from rejected attempts that subsequently repaired, cancellation, incomplete operations, and attempts without returned usage. Reported cost is not a billing guarantee.
+
+Run the same offline script on your Mac after loading this code and enabling diagnostics there. Export **metadata-only reports**, not full session transcripts:
+
+```sh
+umask 077
+node --experimental-transform-types /path/to/pi-brief/scripts/brief-report.mjs --json > mac-brief-report.json
+```
+
+After copying that report to this machine through a channel you trust, combine it with local logs:
+
+```sh
+npm run diagnostics -- --logs ~/.pi/agent/brief-diagnostics --logs ./mac-brief-report.json --details
+```
+
+JSON reports contain only projected diagnostic metadata and can be re-imported. Event IDs deduplicate overlapping exports, and costs are counted once per attempt. Unknown schemas, malformed/truncated records, conflicting event IDs, and symlinks are flagged rather than treated as evidence of no failures. The reader is bounded to 256 files, 32 MiB per file, 128 MiB total, and 100,000 records; exceeding a limit fails explicitly. It makes no network/model calls and does not discover or scan Pi session transcripts or credential files.
+
+**This cannot reconstruct old failures that were never recorded, prove complete failure coverage, or establish live model accuracy.** Missing logs are not evidence that an extension never failed.
+
 ## Development
 
 ```sh
@@ -159,7 +213,7 @@ npm pack --dry-run
 
 `npm publish` runs the typecheck and complete test suite through `prepublishOnly` before uploading. It requires npm authentication with publish permission for `pi-brief`.
 
-Tests use mocked responses to cover one-call success, successful repair, three-call exhaustion, manual retry feedback, exact rejection/error feedback, JSON/schema/length/citation failures and token-limit stops, bounded repair privacy, non-retryable provider/authentication failures, request and operation deadlines, cancellation and superseded repairs, retained accepted briefs, and usage accounting. They also cover evidence bounds, nested-tool privacy, citations, branch restoration, refresh/navigation races, TL;DR limits, and headless behavior. Integration tests load the package with Pi's published resource loader and bind real sessions in TUI, print, JSON, and RPC modes. An in-memory provider also checks runtime authentication and virtual-model routing, without network or paid model calls. Passing tests do **not** prove live model accuracy.
+Tests use mocked responses to cover one-call success, successful repair, three-call exhaustion, manual retry feedback, exact rejection/error feedback, JSON/schema/length/citation failures and token-limit stops, bounded repair privacy, non-retryable provider/authentication failures, request and operation deadlines, cancellation and superseded repairs, retained accepted briefs, and usage accounting. They also cover evidence bounds, nested-tool privacy, citations, branch restoration, refresh/navigation races, TL;DR limits, and headless behavior. Diagnostics tests cover opt-in behavior, private file permissions, redaction-by-projection, rotation/retention, log-write failures, cancellations and late usage, incomplete records, Linux/Mac report merging, deduplication, input bounds, and offline CLI use. Integration tests load the package with Pi's published resource loader and bind real sessions in TUI, print, JSON, and RPC modes. An in-memory provider also checks runtime authentication and virtual-model routing, without network or paid model calls. Passing tests do **not** prove live model accuracy.
 
 The semantic fixture is `test/fixtures/judgment-cases.json`. It contains 14 synthetic cases. References are withheld from the summarizer. Judge packets include the original fixture so the judge can detect information lost by the evidence pipeline. This is a regression set, not a held-out generalization benchmark.
 
