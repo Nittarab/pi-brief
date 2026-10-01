@@ -125,27 +125,113 @@ test("a user-only branch saves the cited goal without claiming alignment", async
   h.emit("session_shutdown");
 });
 
-test("an unsummarized goal fails visibly and is not saved as a joined sentence", async () => {
+test("an unsummarized goal exhausts repair visibly and is never saved as a joined sentence", async () => {
   const h = harness("tui", [user("Fix checkout but do not deploy"), assistant()]);
   h.setComplete(async () => response({ ...value, goal: `Fix checkout ${"using local invoice fixtures ".repeat(8)}but do not deploy` }));
   h.emit("session_start"); await tick();
-  assert.equal(h.calls, 1);
+  assert.equal(h.calls, 3);
   assert.equal(h.entries.length, 0);
   assert.match(h.lines()[0]!, /update failed/);
   await h.command("status"); assert.match(h.notifications.at(-1)!, /goal must be a short TL;DR/);
   h.emit("session_shutdown");
 });
 
-test("invalid provenance is visible, counted and not auto-retried; explicit refresh recovers", async () => {
+test("invalid provenance exhausts repair, retains input without more calls; explicit refresh recovers", async () => {
   const h = harness("tui", [user(), assistant()]);
   h.setComplete(async () => response({ ...value, evidence: { goal: ["foreign-branch"], pivot: [], drift: [] } }));
   h.emit("session_start"); await tick();
   assert.match(h.lines()[0]!, /update failed/);
-  h.emit("agent_settled"); await tick(); assert.equal(h.calls, 1);
-  await h.command("status"); assert.match(h.notifications.at(-1)!, /goal evidence/);
+  h.emit("agent_settled"); await tick(); assert.equal(h.calls, 3);
+  await h.command("status");
+  assert.match(h.notifications.at(-1)!, /3 calls.*\$0.00300.*1 pending.*failed input retained.*invalid brief after 3 calls.*goal evidence/);
   assert.equal(h.entries.length, 0);
   h.setComplete(async () => response()); await h.command("refresh");
-  assert.equal(h.calls, 2); assert.match(h.lines()[0]!, /Goal: Fix checkout/);
+  assert.equal(h.calls, 4); assert.match(h.lines()[0]!, /Goal: Fix checkout/);
+  h.emit("session_shutdown");
+});
+
+test("active repair keeps the accepted widget and status distinct from retained failed input", async () => {
+  const h = harness("tui", [user(), assistant()]);
+  h.emit("session_start"); await tick();
+  assert.equal(h.entries.length, 1);
+  h.setBranch([user(), assistant(), assistant("Checking totals", "a2")]);
+  let resolve!: (reply: ReturnType<typeof response>) => void;
+  const prompts: string[] = [], options: any[] = [];
+  h.setComplete(async (_model, context, opts) => {
+    prompts.push((context as any).messages[1].content);
+    options.push(opts);
+    if (prompts.length === 1) return response({ ...value, now: "Investigating locally ".repeat(12) });
+    return new Promise((r) => { resolve = r; });
+  });
+  const refreshing = h.command("refresh"); await tick();
+  assert.equal(h.calls, 3, "one accepted call plus initial rejection and active repair");
+  assert.equal(h.entries.length, 1, "rejected output is not persisted");
+  assert.equal(h.lines()[0], "Goal: Fix checkout · Now: Investigate checkout");
+  await h.command("status");
+  assert.match(h.notifications.at(-1)!, /3 calls.*\$0.00200.*0 pending.*repairing \(call 2\/3\)/);
+  assert.doesNotMatch(h.notifications.at(-1)!, /failed input retained|last error/);
+  assert.ok(prompts[1]!.startsWith(prompts[0]!));
+  assert.match(prompts[1]!, /brief now must be a short TL;DR/);
+  for (const opts of options) {
+    assert.equal(opts.timeoutMs, 30_000);
+    assert.equal(opts.maxRetries, 0);
+    assert.equal(opts.maxTokens, 700);
+    assert.equal(opts.sessionId, "session-123");
+  }
+  resolve(response({ ...value, now: "Check invoice totals" })); await refreshing;
+  assert.equal(h.calls, 3);
+  assert.equal(h.entries.length, 2);
+  assert.match(h.lines()[0]!, /Now: Check invoice totals/);
+  await h.command("status"); assert.match(h.notifications.at(-1)!, /\$0.00300.*idle/);
+  h.emit("session_shutdown");
+});
+
+test("reload, navigation and shutdown cancel active repairs without applying late results", async () => {
+  for (const event of ["session_start", "session_before_tree", "session_before_switch", "session_before_fork", "session_tree", "session_shutdown"]) {
+    const h = harness("tui", [user(), assistant()]);
+    let resolve!: (reply: ReturnType<typeof response>) => void;
+    let repairSignal: AbortSignal | undefined;
+    h.setComplete(async (_model, _context, options) => {
+      if (h.calls === 1) return response({ ...value, evidence: { goal: ["missing"], pivot: [], drift: [] } });
+      repairSignal = (options as any).signal;
+      return new Promise((r) => { resolve = r; });
+    });
+    h.emit("session_start"); await tick();
+    assert.equal(h.calls, 2);
+    h.setBranch([]); h.emit(event);
+    assert.equal(repairSignal?.aborted, true);
+    resolve(response()); await tick();
+    assert.equal(h.calls, 2);
+    assert.equal(h.entries.length, 0);
+    assert.doesNotMatch(h.lines().join("\n"), /Fix checkout/);
+    h.emit("session_shutdown");
+  }
+});
+
+test("adapter token-limit output receives complete-object repair while retaining its cost", async () => {
+  const h = harness("tui", [user(), assistant()]);
+  const prompts: string[] = [];
+  h.setComplete(async (_model, context) => {
+    prompts.push((context as any).messages[1].content);
+    return response(value, prompts.length === 1 ? "length" : "stop");
+  });
+  h.emit("session_start"); await tick();
+  assert.equal(h.calls, 2);
+  assert.equal(h.entries.length, 1);
+  assert.match(prompts[1]!, /model stopped: length/);
+  assert.match(prompts[1]!, /corrected, complete JSON object/);
+  await h.command("status"); assert.match(h.notifications.at(-1)!, /2 calls.*\$0.00200.*idle/);
+  h.emit("session_shutdown");
+});
+
+test("thrown authentication failure is visible and does not attempt output repair", async () => {
+  const h = harness("tui", [user(), assistant()]);
+  h.setComplete(async () => { throw new Error("401 Missing API key"); });
+  h.emit("session_start"); await tick();
+  assert.equal(h.calls, 1);
+  assert.equal(h.entries.length, 0);
+  await h.command("status");
+  assert.match(h.notifications.at(-1)!, /failed input retained.*401 Missing API key/);
   h.emit("session_shutdown");
 });
 
@@ -309,7 +395,7 @@ test("a session replacement during Pi's idle wait cancels refresh before spendin
 });
 
 test("queued users, continuations and pre-navigation invalidate stale replies without a new call", async () => {
-  for (const [name, event] of [["message_start", { message: { role: "user", content: "New task" } }], ["agent_start", {}], ["session_before_tree", {}]] as const) {
+  for (const [name, event] of [["message_start", { message: { role: "user", content: "New task" } }], ["agent_start", {}], ["session_before_tree", {}], ["session_before_switch", {}], ["session_before_fork", {}]] as const) {
     const h = harness("tui", [user(), assistant()]);
     let resolve!: (reply: ReturnType<typeof response>) => void;
     h.setComplete(async () => new Promise((r) => { resolve = r; }));
@@ -323,5 +409,7 @@ test("queued users, continuations and pre-navigation invalidate stale replies wi
 test("provider stop reason and detail remain visible without retry", async () => {
   const h = harness("tui", [user(), assistant()]); h.setComplete(async () => ({ ...response(value, "error"), errorMessage: "400 MissingSessionID" }));
   h.emit("session_start"); await tick(); await h.command("status");
-  assert.match(h.notifications.at(-1)!, /model stopped: error: 400 MissingSessionID/); h.emit("session_shutdown");
+  assert.match(h.notifications.at(-1)!, /model stopped: error: 400 MissingSessionID/);
+  assert.equal(h.calls, 1);
+  h.emit("session_shutdown");
 });

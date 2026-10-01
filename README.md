@@ -42,7 +42,7 @@ After `pi update --extensions`, run `/reload` or restart Pi. An already-open ses
 
 The default model is `opencode-go/mimo-v2.6-flash`. If that model is available and authenticated in Pi, pi-brief sends bounded session evidence to it automatically. There is no separate opt-in.
 
-There are no runtime call or spending limits. If the model is missing, the line shows `off: model not found` and makes no request.
+There are no session-wide call or spending limits. Each update allows at most 3 model calls: the first request and up to 2 validation repairs. Rejected replies also count and may cost money. If the model is missing, the line shows `off: model not found` and makes no request.
 
 Set `PI_BRIEF_MODEL='provider/model-id'`, or create `~/.pi/agent/brief.json`:
 
@@ -64,7 +64,7 @@ When `PI_CODING_AGENT_DIR` is set, configuration is read from `<agent-dir>/brief
 |---|---|
 | Goal + Now line | Shows the last accepted goal and current work |
 | `/brief` | Shows Goal, Done, Now, Next, and Blocked |
-| `/brief status` | Shows model, calls, reported cost, pending work, alignment, and the last error |
+| `/brief status` | Shows model, calls, reported cost, summarizing/repairing/retained-failure state, pending work, alignment, and the last error |
 | `/brief refresh` | Retries a failed update or summarizes changed evidence |
 | `/trace` | Shows or hides the trace in the same widget |
 | `/trace on`, `/trace off` | Sets the trace state directly |
@@ -103,7 +103,7 @@ The extension checks that goal and pivot citations point to user records, and dr
 
 The path is:
 
-`active branch → bounded evidence → one model call → validated judgment → branch-local entry and widget`
+`active branch → bounded evidence snapshot → summary + up to 2 validation repairs → validated judgment → branch-local entry and widget`
 
 - The first three user records, up to four cited goal anchors, and recent requests are retained, up to 12 user records.
 - Recent visible assistant text has its own budget, so a tool burst cannot remove the user's intent.
@@ -123,10 +123,14 @@ Missing middle text can still hide an important constraint. Omission is not evid
 - Branch or session navigation closes the old request and restores only the selected branch.
 - A new accepted trace replaces the old one, so an old drift warning does not remain without support.
 - Old stored briefs without the current evidence version are not restored. The active branch is summarized again.
-- A failed update keeps the last accepted brief, shows the error, and does not retry automatically.
+- An invalid model output triggers up to two repairs. Each repair resends the original bounded evidence and output contract, the latest rejected response, the exact validation error, and an instruction to return a corrected, complete JSON object. Every corrected response runs through all the same checks; partial summaries are never applied.
+- Repairs reuse the same evidence and previous-brief snapshot. Feedback does not accumulate across attempts. Its serialized JSON is capped at 8,000 characters, including escaping; oversized feedback fails explicitly rather than being truncated. The same privacy exclusions apply, and rejected responses are labeled untrusted data.
+- A token-limit stop is a correctable incomplete-output failure and receives repair feedback, even if its text looks like valid JSON. Other non-success stop reasons, authentication, network and provider errors, invalid usage, and timeouts are not repaired. There are no transport retries.
+- Cancellation, reload, navigation, or superseding work aborts the operation and prevents further repairs or stale results from being applied. There is only one awaited request at a time.
+- During repair the last accepted brief stays visible. After exhaustion or a non-repairable failure, the extension retains the failed evidence and accepted brief, shows a final error, and makes no further automatic calls. `/brief refresh` starts a new bounded operation; after validation exhaustion, unchanged input includes the final rejected response and exact error rather than repeating the initial prompt without feedback. New evidence starts fresh. `/brief status` distinguishes active `repairing (call N/3)` from `failed input retained`.
 - Print, JSON, and RPC modes make no summary calls and show no widget.
 
-Each call allows 700 output tokens, has a 30-second cancellation deadline, and has zero transport retries. The deadline also releases the extension if a custom provider ignores cancellation; it cannot guarantee that the provider stops billing. The current prompt version is `evidence-v6`.
+Each call allows 700 output tokens and has a 30-second cancellation deadline. The entire update, including repairs, has a separate 75-second deadline that is not reset between attempts. These deadlines release the extension even if a custom provider ignores cancellation; they cannot guarantee that the provider stops processing or billing, or prevent its abandoned request from overlapping later work. The current prompt version is `evidence-v7`.
 
 The model must return short lines: Goal and Now under 90 characters, other brief fields under 110, and trace lines under 80. Overlong prose is rejected. It is not joined with an ellipsis and presented as a summary.
 
@@ -134,13 +138,13 @@ The model must return short lines: Goal and Now under 90 characters, other brief
 
 **Calls are enabled by default when the configured model is available. Disable or change the model before starting Pi if you do not trust its provider or do not want automatic calls.**
 
-A request can include user prompts, visible assistant text, tool names, nested-call statuses, tool error flags, the previous brief, and the Pi session ID. OpenCode Go requires the session ID for routing. Other providers may ignore it.
+A request can include user prompts, visible assistant text, tool names, nested-call statuses, tool error flags, the previous brief, and the Pi session ID. Repair calls also include the latest rejected model text and its validation error; they do not fetch additional session evidence. OpenCode Go requires the session ID for routing. Other providers may ignore it.
 
 The request does not include raw tool arguments, raw tool output, or thinking. Prompts and visible answers can still contain secrets. The instruction to omit secrets is **not redaction**. Do not enable pi-brief for a sensitive session unless you accept disclosure to the selected provider.
 
 Generated briefs, trace rows, and source IDs are stored as custom session entries. They are excluded from the agent's context. Protect session files. The extension labels untrusted content as data and checks citations, but it cannot prevent a wrong or adversarial model judgment.
 
-`/brief status` tracks calls and reported cost without limiting updates. Counts and observed cost reset when the branch or session changes. A timeout, aborted call, or provider exception may bill without returned usage. A virtual model's router may make additional requests that are not included in the returned summary usage; review the router before enabling it.
+`/brief status` counts every attempt and its reported cost, including rejected replies and late returned usage after cancellation, without a session-wide spending limit. Counts and observed cost reset when the branch or session changes. A timeout, aborted call, or provider exception may bill without returned usage. A virtual model's router may make additional requests that are not included in the returned summary usage; review the router before enabling it.
 
 ## Development
 
@@ -153,7 +157,7 @@ npm pack --dry-run
 
 `npm publish` runs the typecheck and complete test suite through `prepublishOnly` before uploading. It requires npm authentication with publish permission for `pi-brief`.
 
-Tests cover evidence bounds, nested-tool privacy, citations, branch restoration, superseded replies, refresh/navigation races, cancellation, TL;DR limits, headless behavior, and usage reporting. Integration tests load the package with Pi's published resource loader and bind real sessions in TUI, print, JSON, and RPC modes. An in-memory provider also checks runtime authentication and virtual-model routing, without network or paid model calls. Passing tests do **not** prove live model accuracy.
+Tests use mocked responses to cover one-call success, successful repair, three-call exhaustion, manual retry feedback, exact rejection/error feedback, JSON/schema/length/citation failures and token-limit stops, bounded repair privacy, non-retryable provider/authentication failures, request and operation deadlines, cancellation and superseded repairs, retained accepted briefs, and usage accounting. They also cover evidence bounds, nested-tool privacy, citations, branch restoration, refresh/navigation races, TL;DR limits, and headless behavior. Integration tests load the package with Pi's published resource loader and bind real sessions in TUI, print, JSON, and RPC modes. An in-memory provider also checks runtime authentication and virtual-model routing, without network or paid model calls. Passing tests do **not** prove live model accuracy.
 
 The semantic fixture is `test/fixtures/judgment-cases.json`. It contains 14 synthetic cases. References are withheld from the summarizer. Judge packets include the original fixture so the judge can detect information lost by the evidence pipeline. This is a regression set, not a held-out generalization benchmark.
 

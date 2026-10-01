@@ -118,12 +118,12 @@ test("usage reporting does not stop updates after 80 calls or high reported cost
   c.close();
 });
 
-test("failure retains evidence but never silently retries; explicit retry and new events can retry", async () => {
+test("provider failure retains evidence without repair; explicit retry and new events can retry", async () => {
   let calls = 0;
-  const c = new BriefController(async () => { calls++; if (calls === 1) return { text: "bad", cost: 0.01 }; return { text: json, cost: 0.01 }; },
+  const c = new BriefController(async () => { calls++; if (calls === 1) return { text: "bad", cost: 0.01, error: "authentication failed" }; return { text: json, cost: 0.01 }; },
     () => {});
   c.add({ type: "user", text: "request" }, true);
-  await c.flush();
+  await c.waitForIdle();
   await c.flush();
   assert.equal(calls, 1);
   assert.equal(c.stats.pending, 1);

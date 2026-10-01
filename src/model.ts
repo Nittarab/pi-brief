@@ -1,4 +1,4 @@
-// Adapter: one request contract shared by the extension and live evaluation. No retries.
+// Adapter: one request contract shared by the extension and live evaluation. No transport retries.
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { cleanText } from "./evidence.ts";
 import { briefSystemPrompt } from "./judgment.ts";
@@ -8,7 +8,7 @@ export const defaultModel = "opencode-go/mimo-v2.6-flash";
 type Registry = ExtensionContext["modelRegistry"];
 type Model = NonNullable<ReturnType<Registry["find"]>>;
 
-export async function completeBrief(registry: Registry, model: Model, name: string, prompt: string, sessionId: string, signal: AbortSignal): Promise<SummaryResult> {
+export async function completeBrief(registry: Registry, model: Model, name: string, prompt: string, sessionId: string, signal: AbortSignal, reportCost?: (cost: number) => void): Promise<SummaryResult> {
   const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
   requestSignal.throwIfAborted();
   const timestamp = Date.now();
@@ -28,12 +28,16 @@ export async function completeBrief(registry: Registry, model: Model, name: stri
       signal: requestSignal, timeoutMs: 30_000, maxRetries: 0, maxTokens: 700, cacheRetention: "none", toolChoice: "none",
       ...(name === defaultModel ? { samplingParams: { chat_template_kwargs: { enable_thinking: false } } } : {}),
       sessionId,
-    }).result(), aborted]);
+    }).result().then((reply) => {
+      reportCost?.(reply.usage.cost.total); // Returned usage still counts if cancellation won the race.
+      return reply;
+    }), aborted]);
     const detail = cleanText(reply.errorMessage ?? "", 90);
     return {
       text: reply.content.filter((part) => part.type === "text").map((part) => part.text).join(""),
       cost: reply.usage.cost.total,
       error: reply.stopReason === "stop" ? undefined : `model stopped: ${reply.stopReason}${detail ? `: ${detail}` : ""}`,
+      ...(reply.stopReason === "length" ? { repairable: true } : {}),
     };
   } finally {
     requestSignal.removeEventListener("abort", onAbort);

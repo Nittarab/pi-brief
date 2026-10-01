@@ -73,8 +73,8 @@ export default function piBrief(pi: ExtensionAPI) {
 
   function show(ctx: ExtensionContext) {
     if (ctx.mode !== "tui") return;
-    const state = activity === "update failed" || activity.startsWith("off:") || activity.startsWith("config error")
-      ? activity : "";
+    const state = controller?.stats.failed ? "update failed"
+      : activity.startsWith("off:") || activity.startsWith("config error") ? activity : "";
     const warn = Boolean(rail.drift || rail.left);
     ctx.ui.setWidget(widgetKey, (_tui, theme: Theme) => ({
       invalidate() {},
@@ -125,8 +125,8 @@ export default function piBrief(pi: ExtensionAPI) {
     activity = "";
     const restored = savedJudgment(ctx);
     const fallbackSessionId = randomUUID();
-    const current = new BriefController((prompt, signal) =>
-      completeBrief(ctx.modelRegistry, model, config.model, prompt, routingSessionId(ctx, fallbackSessionId), signal), (brief, changed) => {
+    const current = new BriefController((prompt, signal, reportCost) =>
+      completeBrief(ctx.modelRegistry, model, config.model, prompt, routingSessionId(ctx, fallbackSessionId), signal, reportCost), (brief, changed) => {
       if (controller !== current) return; // A switched session/branch cannot write to the active branch.
       if (changed) pi.appendEntry(key, { version: 1, brief, trace: current.presented, goalSources: current.goalSources, alignment: current.alignment }); // Branch-local, excluded from the agent's context.
       activity = current.stats.error ? "update failed" : "";
@@ -161,8 +161,10 @@ export default function piBrief(pi: ExtensionAPI) {
   pi.on("message_start", (event, ctx) => {
     if (event.message.role === "user") invalidate(ctx);
   });
-  // Navigation can await another extension or a branch summary before session_tree.
+  // Navigation can await another extension or a branch summary before replacing the active context.
   pi.on("session_before_tree", (_event, ctx) => invalidate(ctx));
+  pi.on("session_before_switch", (_event, ctx) => invalidate(ctx));
+  pi.on("session_before_fork", (_event, ctx) => invalidate(ctx));
   pi.on("agent_settled", (_event, ctx) => {
     if (!controller) return;
     activity = controller.stats.error ? "update failed" : "";
@@ -191,8 +193,10 @@ export default function piBrief(pi: ExtensionAPI) {
         refresh(ctx);
       }
       const s = current.stats;
+      const state = s.failed ? "failed input retained; /brief refresh to retry" : s.repairing ? `repairing (call ${s.attempt}/3)`
+        : s.running ? "summarizing" : "idle";
       ctx.ui.notify(action === "status"
-        ? `${modelName} · ${s.calls} calls · $${s.cost.toFixed(5)} · ${s.pending} pending · alignment: ${current.alignment}${s.error ? ` · last error: ${s.error}` : ""}`
+        ? `${modelName} · ${s.calls} calls · $${s.cost.toFixed(5)} · ${s.pending} pending · ${state} · alignment: ${current.alignment}${s.error ? ` · last error: ${s.error}` : ""}`
         : display(current.brief).join("\n"), "info");
     },
   });

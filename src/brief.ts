@@ -1,16 +1,18 @@
 import { sliceByColumn, visibleWidth } from "@earendil-works/pi-tui";
 import { cleanText, type Evidence } from "./evidence.ts";
-import { parseJudgment, promptFor, type Judgment } from "./judgment.ts";
+import { parseBriefFields, parseJudgment, promptFor, repairPromptFor, type Judgment } from "./judgment.ts";
 export { cleanText, visibleText, sessionOutline } from "./evidence.ts";
 export { promptFor } from "./judgment.ts";
 
 export type Brief = { goal: string; done: string; now: string; next: string; blocked: string };
 export type Activity = { type: "user" | "assistant" | "tool"; text: string };
-export type SummaryResult = { text: string; cost: number; error?: string };
-export type Summarize = (prompt: string, signal: AbortSignal) => Promise<SummaryResult>;
+export type SummaryResult = { text: string; cost: number; error?: string; repairable?: boolean };
+export type Summarize = (prompt: string, signal: AbortSignal, reportCost?: (cost: number) => void) => Promise<SummaryResult>;
 export type Presented = { who: "user" | "agent"; kind: "task" | "turn" | "pivot" | "drift"; text: string };
 const fields = ["goal", "done", "now", "next", "blocked"] as const;
 const blank: Brief = { goal: "—", done: "—", now: "—", next: "—", blocked: "—" };
+export const maxSummaryCalls = 3;
+export const operationTimeoutMs = 75_000;
 
 export function isBrief(value: unknown): value is Brief {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -20,7 +22,7 @@ export function isBrief(value: unknown): value is Brief {
 export function parseBrief(text: string): Brief {
   const parsed: unknown = JSON.parse(text.trim().replace(/^```(?:json)?\s*|\s*```$/g, ""));
   if (!isBrief(parsed)) throw new Error("missing brief field or invalid brief object");
-  return Object.fromEntries(fields.map((field) => [field, cleanText(parsed[field], 140) || "—"])) as Brief;
+  return parseBriefFields(parsed);
 }
 
 // Old session entries can still be read, but live replies use parseJudgment instead.
@@ -77,6 +79,9 @@ export class BriefController {
   private running = false;
   private closed = false;
   private failed = false;
+  private attempt = 0;
+  private repairing = false;
+  private retryPrompt: { original: string; prompt: string } | undefined;
   private calls = 0;
   private cost = 0;
   private error: string | undefined;
@@ -103,7 +108,8 @@ export class BriefController {
   get presented(): Presented[] { return this.shown.map((step) => ({ ...step })); }
   get goalSources(): string[] { return [...(this.judgment?.goalSources ?? this.initialProvenance?.goalSources ?? [])]; }
   get alignment(): Judgment["alignment"] { return this.judgment?.alignment ?? this.initialProvenance?.alignment ?? "unknown"; }
-  get stats() { return { calls: this.calls, cost: this.cost, error: this.error, pending: this.pending.length, running: this.running }; }
+  get stats() { return { calls: this.calls, cost: this.cost, error: this.error, pending: this.pending.length, running: this.running,
+    failed: this.failed, attempt: this.attempt, repairing: this.running && !this.failed && !this.abort?.signal.aborted && this.repairing }; }
 
   waitForIdle(): Promise<void> {
     if (this.closed || !this.running) return Promise.resolve();
@@ -116,7 +122,17 @@ export class BriefController {
   }
 
   // A new user turn invalidates old work without spending a call before settlement.
-  invalidate(): void { this.revision++; this.pending = []; this.ready = false; this.sentOutline = ""; this.inFlightOutline = ""; }
+  invalidate(): void {
+    this.revision++;
+    this.abort?.abort(new Error("brief update superseded"));
+    this.pending = [];
+    this.ready = false;
+    this.failed = false;
+    this.error = undefined;
+    this.retryPrompt = undefined;
+    this.sentOutline = "";
+    this.inFlightOutline = "";
+  }
 
   add(event: Activity, summarizeNow = false): void {
     if (this.closed) return;
@@ -135,6 +151,7 @@ export class BriefController {
     this.pending = [{ type: "user", text: outline }];
     this.outlineMode = true;
     this.revision++;
+    this.abort?.abort(new Error("brief update superseded"));
     this.failed = false;
     this.trigger();
   }
@@ -145,6 +162,31 @@ export class BriefController {
     void this.flush();
   }
 
+  private async request(prompt: string, signal: AbortSignal): Promise<SummaryResult> {
+    signal.throwIfAborted();
+    let onAbort!: () => void;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(signal.reason);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+    try {
+      this.calls++;
+      // Account before the stale/abort gate. The adapter can report late usage even after cancellation.
+      let reported = false;
+      const reportCost = (cost: number) => {
+        if (!Number.isFinite(cost) || cost < 0) throw new Error("invalid model cost");
+        if (!reported) { this.cost += cost; reported = true; }
+      };
+      const result = this.summarize(prompt, signal, reportCost).then((result) => {
+        reportCost(result.cost);
+        return result;
+      });
+      return await Promise.race([result, aborted]);
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+    }
+  }
+
   async flush(retry = false): Promise<void> {
     if (retry) { this.failed = false; this.ready = true; }
     if (this.closed || this.running || !this.pending.length || this.failed) return;
@@ -153,28 +195,57 @@ export class BriefController {
     this.pending = [];
     this.running = true;
     this.inFlightOutline = outline ? activity[0]?.text ?? "" : "";
-    this.calls++;
+    this.error = undefined;
     const abort = new AbortController();
     this.abort = abort;
+    const deadline = AbortSignal.timeout(operationTimeoutMs);
+    const signal = AbortSignal.any([abort.signal, deadline]);
     try {
-      const result = await this.summarize(promptFor(this.summary, activity, outline), abort.signal);
-      if (!Number.isFinite(result.cost) || result.cost < 0) throw new Error("invalid model cost");
-      this.cost += result.cost; // Malformed and superseded replies may still be billed.
-      if (this.closed || abort.signal.aborted || revision !== this.revision) return;
-      if (result.error) throw new Error(result.error);
-      const judgment = outline ? parseJudgment(result.text, JSON.parse(activity[0]!.text) as Evidence) : undefined;
-      const next = judgment?.brief ?? parseBrief(result.text);
-      const presented = judgment?.presented ?? parsePresented(result.text);
-      this.error = undefined;
-      const changed = JSON.stringify(judgment) !== JSON.stringify(this.judgment) || JSON.stringify(presented) !== JSON.stringify(this.shown) || fields.some((field) => next[field] !== this.summary[field]);
-      this.shown = presented; // Empty is a valid update; never retain stale drift.
-      this.summary = next;
-      this.judgment = judgment;
-      if (outline) this.sentOutline = activity[0]?.text ?? "";
-      this.onChange(this.brief, changed);
+      // Freeze both evidence and previous brief for the entire validation-and-repair operation.
+      const source = outline ? JSON.parse(activity[0]!.text) as Evidence : undefined;
+      const original = promptFor(this.summary, activity, outline);
+      // Manual retry of identical input also includes feedback, rather than repeating a failed prompt.
+      let prompt = this.retryPrompt?.original === original ? this.retryPrompt.prompt : original;
+      this.retryPrompt = undefined;
+      for (let attempt = 1; attempt <= maxSummaryCalls; attempt++) {
+        signal.throwIfAborted();
+        if (this.closed || revision !== this.revision) return;
+        this.attempt = attempt;
+        this.repairing = prompt !== original;
+        if (this.repairing) this.onChange(this.brief, false); // Retain the last accepted brief during repair.
+        const result = await this.request(prompt, signal);
+        if (this.closed || abort.signal.aborted || revision !== this.revision) return;
+        signal.throwIfAborted();
+        // Transport, authentication and provider failures are not output-validation failures.
+        if (result.error && !result.repairable) throw new Error(result.error);
+        let judgment: Judgment | undefined, next: Brief, presented: Presented[];
+        try {
+          // A token-limit stop is an incomplete output, never an accepted partial judgment.
+          if (result.error) throw new Error(result.error);
+          judgment = source ? parseJudgment(result.text, source) : undefined;
+          next = judgment?.brief ?? parseBrief(result.text);
+          presented = judgment?.presented ?? parsePresented(result.text);
+        } catch (error) {
+          const validationError = error instanceof Error ? error.message : String(error);
+          prompt = repairPromptFor(original, result.text, validationError);
+          if (attempt === maxSummaryCalls) {
+            this.retryPrompt = { original, prompt }; // Bounded feedback for an explicit retry, never an automatic call.
+            throw new Error(`invalid brief after ${maxSummaryCalls} calls: ${validationError}; /brief refresh to retry`);
+          }
+          continue;
+        }
+        const changed = JSON.stringify(judgment) !== JSON.stringify(this.judgment) || JSON.stringify(presented) !== JSON.stringify(this.shown) || fields.some((field) => next[field] !== this.summary[field]);
+        this.shown = presented; // Empty is a valid update; never retain stale drift.
+        this.summary = next;
+        this.judgment = judgment;
+        if (outline) this.sentOutline = activity[0]?.text ?? "";
+        this.onChange(this.brief, changed);
+        return;
+      }
     } catch (error) {
       if (!this.closed && !abort.signal.aborted && revision === this.revision) {
-        this.error = cleanText(error instanceof Error ? error.message : String(error), 110);
+        this.error = deadline.aborted ? "brief update timed out after 75 seconds; /brief refresh to retry"
+          : cleanText(error instanceof Error ? error.message : String(error), 240);
         this.failed = true;
         this.ready = false;
         this.pending = [...activity, ...this.pending].slice(-20);
@@ -183,6 +254,8 @@ export class BriefController {
     } finally {
       if (this.abort === abort) this.abort = undefined;
       this.running = false;
+      this.attempt = 0;
+      this.repairing = false;
       this.inFlightOutline = "";
       if (this.ready) void this.flush();
       if (!this.running) this.releaseWaiters();
