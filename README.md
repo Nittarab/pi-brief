@@ -6,6 +6,8 @@ pi-brief watches the active session, asks the configured model for a compact jud
 
 Personal extension by Nittarab, tested against **Pi 0.99.1**. It is not a Weft plugin.
 
+See the [changelog](CHANGELOG.md) for release history.
+
 ## Install
 
 Requires Pi 0.99.1 and Node.js 22.19+.

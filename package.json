@@ -10,7 +10,7 @@
     "url": "git+https://github.com/Nittarab/pi-brief.git"
   },
   "keywords": ["pi-package", "pi-extension", "pi", "session", "summary"],
-  "files": ["src", "README.md", "LICENSE"],
+  "files": ["src", "README.md", "CHANGELOG.md", "LICENSE"],
   "pi": { "extensions": ["./src/index.ts"] },
   "scripts": {
     "check": "tsc --noEmit",
